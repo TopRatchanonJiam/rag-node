@@ -24,7 +24,8 @@ COPY app.py .
 COPY --from=web /web/out /app/web
 
 # data/ = state.json, ไฟล์ต้นฉบับ, ไฟล์ export ของลูกค้า
-RUN useradd -r -u 10001 rag && mkdir -p /app/data && chown -R rag /app/data
+# chmod a+rX: กันไฟล์ที่มาจาก SMB share (ACL) ที่ user rag อ่านไม่ได้
+RUN useradd -r -u 10001 rag && chmod -R a+rX /app && mkdir -p /app/data && chown -R rag /app/data
 USER rag
 
 EXPOSE 8080

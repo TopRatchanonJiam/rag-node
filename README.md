@@ -25,6 +25,33 @@ docker compose up -d --build
 - ข้อมูลอยู่ใน volume `node-data`
 - `CENTRAL_URL` ต้องเป็น IP หรือโดเมนของ central ห้ามใช้ `127.0.0.1` เพราะใน container ค่านี้หมายถึงตัว container เอง
 
+## รันบน NAS / server (ให้เครื่องอื่นใน LAN เข้าได้)
+
+```bash
+git clone https://github.com/TopRatchanonJiam/rag-node.git && cd rag-node
+cp .env.example .env
+vi .env
+docker compose up -d --build
+```
+
+ใน `.env` ต้องตั้ง 3 ค่านี้เพิ่มจากการรันบนเครื่องตัวเอง:
+
+```
+CENTRAL_URL=http://<IP ของ central>:9000   # ห้ามใช้ 127.0.0.1
+NODE_BIND=0.0.0.0                           # ค่าเริ่มต้น 127.0.0.1 เครื่องอื่นจะเข้าไม่ได้
+NODE_PASSWORD=<ตั้งรหัสผ่าน>                 # เปิดให้ทั้ง LAN เข้าได้ ต้องมีรหัสผ่าน
+```
+
+จากนั้นเปิด `http://<IP ของ NAS>:8080` แล้วล็อกอินด้วย `NODE_USER` / `NODE_PASSWORD`
+
+ถ้าเปิดไม่ได้ ให้ตรวจตามนี้
+
+- **error `.env: no such file`**: ยังไม่ได้สร้าง `.env` (ไฟล์นี้ไม่อยู่ใน git เพราะมี key)
+- **error `port is already allocated`**: มีแอปอื่นใช้ 8080 อยู่แล้ว ให้แก้ `docker-compose.yml` เป็น `"${NODE_BIND:-127.0.0.1}:8090:8080"` แล้วเปิดที่พอร์ต 8090
+- **เครื่องอื่นเข้าไม่ได้**: เปิดพอร์ต 8080 ใน firewall (Synology: Control Panel → Security → Firewall)
+- **หน้าเว็บขึ้น แต่ขึ้นว่า "ติดต่อ central ไม่ได้"**: ทดสอบด้วย `curl http://<IP ของ central>:9000/v1/meta` ถ้าคนละเครือข่ายกับ central ต้องใช้ VPN หรือเปิด central ผ่าน HTTPS
+- **อัปเดตเวอร์ชัน**: `git pull && docker compose up -d --build` ข้อมูลใน volume `node-data` ไม่หาย
+
 ## รันแบบไม่ใช้ Docker (Windows)
 
 ```powershell

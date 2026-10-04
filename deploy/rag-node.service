@@ -1,0 +1,15 @@
+[Unit]
+Description=RAG Node (VPS2) — customer node
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=rag
+WorkingDirectory=/opt/rag-node/app
+ExecStart=/opt/rag-node/app/.venv/bin/uvicorn app:app --host 127.0.0.1 --port 8080 --workers 1 --no-server-header
+Restart=always
+RestartSec=3
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=multi-user.target

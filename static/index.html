@@ -1,0 +1,226 @@
+<!doctype html>
+<html lang="th">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>RAG Node</title>
+<style>
+  :root { --bg:#f5f6f4; --card:#fff; --fg:#1d2420; --muted:#66706a; --line:#dde2dc; --accent:#2e6a39; --err:#b02a20; }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--fg); font:15px/1.6 "Leelawadee UI", Tahoma, system-ui, sans-serif; }
+  .wrap { max-width:1100px; margin:0 auto; padding:20px 16px 60px; display:grid; gap:16px; }
+  h1 { font-size:22px; margin:0; } h2 { font-size:16px; margin:0 0 10px; }
+  .grid { display:grid; grid-template-columns: 360px 1fr; gap:16px; align-items:start; }
+  @media (max-width: 860px) { .grid { grid-template-columns: 1fr; } }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:14px; display:grid; gap:10px; min-width:0; }
+  .row { display:flex; gap:8px; flex-wrap:wrap; align-items:center; }
+  input[type=text], textarea, select { width:100%; padding:7px 9px; border:1px solid var(--line); border-radius:6px; font:inherit; background:#fff; }
+  textarea { min-height:70px; resize:vertical; }
+  button { padding:6px 12px; border:1px solid var(--accent); background:var(--accent); color:#fff; border-radius:6px; font:inherit; cursor:pointer; }
+  button.ghost { background:#fff; color:var(--accent); }
+  button.danger { background:#fff; color:var(--err); border-color:var(--err); padding:2px 8px; font-size:13px; }
+  button:disabled { opacity:.5; cursor:wait; }
+  .muted { color:var(--muted); font-size:13px; }
+  .err { color:var(--err); }
+  ul { margin:0; padding-left:18px; } li { margin:2px 0; }
+  .kb { border-top:1px solid var(--line); padding-top:8px; display:grid; gap:6px; }
+  #chatlog { min-height:320px; max-height:60vh; overflow:auto; display:grid; gap:10px; align-content:start; }
+  .msg { padding:9px 12px; border-radius:8px; white-space:pre-wrap; overflow-wrap:anywhere; }
+  .me { background:#e6efe6; justify-self:end; max-width:85%; }
+  .bot { background:#f1f3f0; max-width:95%; }
+  .status { font-size:13px; color:var(--muted); }
+  pre.small { font-size:12px; background:#f1f3f0; padding:8px; border-radius:6px; overflow:auto; margin:0; max-height:220px; }
+  label.chk { display:flex; gap:6px; align-items:center; font-size:14px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="row" style="justify-content:space-between">
+    <h1>RAG Node <span class="muted">เครื่องลูกค้า (VPS2) → central (VPS1)</span></h1>
+    <button class="ghost" id="btnHealth">ตรวจการเชื่อมต่อ</button>
+  </div>
+  <pre class="small" id="health" hidden></pre>
+
+  <div class="grid">
+    <div style="display:grid; gap:16px">
+      <div class="card">
+        <h2>คลังความรู้ (KB)</h2>
+        <div class="row"><input type="text" id="kbName" placeholder="ชื่อ KB ใหม่"><button id="btnKb">สร้าง</button></div>
+        <div class="muted" id="cfg"></div>
+        <div id="kbList"></div>
+      </div>
+
+      <div class="card">
+        <h2>ชุดสูตร (Skill .md)</h2>
+        <div class="row"><input type="text" id="skName" placeholder="ชื่อชุดสูตร"><button id="btnSk">สร้าง</button></div>
+        <div id="skList"></div>
+      </div>
+
+      <div class="card">
+        <h2>บอท</h2>
+        <input type="text" id="botName" placeholder="ชื่อบอท">
+        <textarea id="botPrompt" placeholder="System prompt"></textarea>
+        <div class="muted">KB ที่ใช้</div><div id="botKbs" class="row"></div>
+        <div class="muted">ชุดสูตรที่ใช้</div><div id="botSks" class="row"></div>
+        <label class="chk"><input type="checkbox" id="botRerank"> ใช้ rerank</label>
+        <div class="row"><button id="btnBot">สร้างบอท</button></div>
+        <div id="botList"></div>
+      </div>
+
+      <div class="card">
+        <h2>การใช้งาน (สะสมที่เครื่องนี้)</h2>
+        <pre class="small" id="usage"></pre>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="row"><h2 style="margin:0">ถาม-ตอบ</h2><select id="botSel" style="width:auto; min-width:200px"></select></div>
+      <div id="chatlog"></div>
+      <textarea id="msg" placeholder="พิมพ์คำถาม (Enter = ส่ง, Shift+Enter = ขึ้นบรรทัด)"></textarea>
+      <div class="row"><input type="file" id="attach" accept="image/*,application/pdf"><button id="btnSend">ส่ง</button></div>
+    </div>
+  </div>
+</div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+let STATE = null;
+
+async function api(path, opts = {}) {
+  const res = await fetch(path, opts);
+  let body = null;
+  try { body = await res.json(); } catch {}
+  if (!res.ok) throw new Error((body && body.detail) || `HTTP ${res.status}`);
+  return body;
+}
+const jsonPost = (path, data, method = "POST") =>
+  api(path, { method, headers: { "Content-Type": "application/json" }, body: JSON.stringify(data) });
+
+function esc(s) { return String(s).replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c])); }
+
+async function refresh() {
+  STATE = await api("/api/state");
+  const c = STATE.config;
+  $("cfg").textContent = `LLM: ${c.llm_model || "-"} · Embedding: ${c.embed_model || "-"} (${c.embed_dim}) · rerank: ${c.rerank ? "มี" : "ไม่มี"}`;
+
+  $("kbList").innerHTML = STATE.kbs.map(kb => `
+    <div class="kb">
+      <div class="row" style="justify-content:space-between"><b>${esc(kb.name)}</b>
+        <button class="danger" onclick="delKb('${kb.id}')">ลบ KB</button></div>
+      <div class="muted">${esc(kb.embedding.model)} · ${kb.embedding.dim} มิติ · ${esc(kb.collection_name)}</div>
+      <ul>${Object.entries(kb.files).map(([n, f]) => `<li>${esc(n)} <span class="muted">${f.chunks} chunks</span>
+        <button class="danger" onclick="delFile('${kb.id}', '${encodeURIComponent(n)}')">ลบ</button></li>`).join("") || '<li class="muted">ยังไม่มีไฟล์</li>'}</ul>
+      <div class="row"><input type="file" id="f_${kb.id}" accept=".pdf,.txt,.docx,.csv,.xlsx">
+        <button onclick="upload('${kb.id}', this)">อัปโหลด</button></div>
+    </div>`).join("") || '<div class="muted">ยังไม่มี KB</div>';
+
+  $("skList").innerHTML = STATE.skills.map(s => `
+    <div class="kb"><div class="row" style="justify-content:space-between"><b>${esc(s.name)}</b>
+      <button class="danger" onclick="delSkill('${s.id}')">ลบ</button></div>
+      <div class="muted">${s.files.map(esc).join(", ") || "ยังไม่มีไฟล์"}</div>
+      <div class="row"><input type="file" id="s_${s.id}" accept=".md"><button onclick="uploadSkill('${s.id}', this)">อัปโหลด .md</button></div>
+    </div>`).join("") || '<div class="muted">ยังไม่มีชุดสูตร</div>';
+
+  $("botKbs").innerHTML = STATE.kbs.map(kb => `<label class="chk"><input type="checkbox" value="${kb.id}" class="bk"> ${esc(kb.name)}</label>`).join("") || '<span class="muted">-</span>';
+  $("botSks").innerHTML = STATE.skills.map(s => `<label class="chk"><input type="checkbox" value="${s.id}" class="bs"> ${esc(s.name)}</label>`).join("") || '<span class="muted">-</span>';
+  $("botList").innerHTML = STATE.bots.map(b => `<div class="kb"><div class="row" style="justify-content:space-between"><b>${esc(b.name)}</b>
+      <button class="danger" onclick="delBot('${b.id}')">ลบ</button></div>
+      <div class="muted">KB: ${b.kb_ids.map(id => esc((STATE.kbs.find(k => k.id === id) || {}).name || id)).join(", ") || "-"}${b.use_rerank ? " · rerank" : ""}</div></div>`).join("");
+
+  const sel = $("botSel"), cur = sel.value;
+  sel.innerHTML = STATE.bots.map(b => `<option value="${b.id}">${esc(b.name)}</option>`).join("") || '<option value="">(สร้างบอทก่อน)</option>';
+  if (cur && STATE.bots.some(b => b.id === cur)) sel.value = cur;
+  $("usage").textContent = JSON.stringify(STATE.usage, null, 2);
+}
+
+async function guarded(btn, fn) {
+  if (btn) btn.disabled = true;
+  try { await fn(); await refresh(); } catch (e) { alertBox(e.message); } finally { if (btn) btn.disabled = false; }
+}
+function alertBox(text) { addMsg("bot", "⚠ " + text).classList.add("err"); }
+
+$("btnKb").onclick = (e) => guarded(e.target, async () => { await jsonPost("/api/kbs", { name: $("kbName").value }); $("kbName").value = ""; });
+window.delKb = (id) => guarded(null, () => api(`/api/kbs/${id}`, { method: "DELETE" }));
+window.delFile = (id, name) => guarded(null, () => api(`/api/kbs/${id}/files/${name}`, { method: "DELETE" }));
+window.upload = (id, btn) => guarded(btn, async () => {
+  const f = $(`f_${id}`).files[0]; if (!f) throw new Error("เลือกไฟล์ก่อน");
+  const fd = new FormData(); fd.append("file", f);
+  btn.textContent = "กำลังประมวลผล...";
+  try {
+    const r = await api(`/api/kbs/${id}/files`, { method: "POST", body: fd });
+    addMsg("bot", `อัปโหลด ${r.filename}: ${r.chunks} chunks ใน ${r.seconds} วินาที`);
+  } finally { btn.textContent = "อัปโหลด"; }
+});
+$("btnSk").onclick = (e) => guarded(e.target, async () => { await jsonPost("/api/skills", { name: $("skName").value }); $("skName").value = ""; });
+window.delSkill = (id) => guarded(null, () => api(`/api/skills/${id}`, { method: "DELETE" }));
+window.uploadSkill = (id, btn) => guarded(btn, async () => {
+  const f = $(`s_${id}`).files[0]; if (!f) throw new Error("เลือกไฟล์ .md ก่อน");
+  const fd = new FormData(); fd.append("file", f);
+  await api(`/api/skills/${id}/files`, { method: "POST", body: fd });
+});
+$("btnBot").onclick = (e) => guarded(e.target, async () => {
+  await jsonPost("/api/bots", {
+    name: $("botName").value || "บอท", system_prompt: $("botPrompt").value,
+    kb_ids: [...document.querySelectorAll(".bk:checked")].map(x => x.value),
+    skill_ids: [...document.querySelectorAll(".bs:checked")].map(x => x.value),
+    use_rerank: $("botRerank").checked,
+  });
+});
+window.delBot = (id) => guarded(null, () => api(`/api/bots/${id}`, { method: "DELETE" }));
+
+$("btnHealth").onclick = (e) => guarded(e.target, async () => {
+  const box = $("health"); box.hidden = false; box.textContent = "กำลังตรวจ...";
+  box.textContent = JSON.stringify(await api("/api/health"), null, 2);
+});
+
+function addMsg(cls, text) {
+  const d = document.createElement("div"); d.className = "msg " + cls; d.textContent = text;
+  $("chatlog").appendChild(d); $("chatlog").scrollTop = $("chatlog").scrollHeight; return d;
+}
+
+async function send() {
+  const botId = $("botSel").value, text = $("msg").value.trim();
+  if (!botId || !text) return;
+  addMsg("me", text); $("msg").value = "";
+  const out = addMsg("bot", ""), status = document.createElement("div");
+  status.className = "status"; out.after(status); status.textContent = "กำลังคิด...";
+  const fd = new FormData(); fd.append("message", text);
+  const f = $("attach").files[0]; if (f) fd.append("file", f); $("attach").value = "";
+  $("btnSend").disabled = true;
+  const t0 = performance.now();
+  try {
+    const res = await fetch(`/api/bots/${botId}/chat/stream`, { method: "POST", body: fd });
+    if (!res.ok || !res.body) throw new Error(`HTTP ${res.status}`);
+    const reader = res.body.getReader(), dec = new TextDecoder(); let buf = "";
+    while (true) {
+      const { done, value } = await reader.read(); if (done) break;
+      buf += dec.decode(value, { stream: true });
+      let i;
+      while ((i = buf.indexOf("\n\n")) !== -1) {
+        const raw = buf.slice(0, i); buf = buf.slice(i + 2);
+        const line = raw.split("\n").find(l => l.startsWith("data: ")); if (!line) continue;
+        const ev = JSON.parse(line.slice(6));
+        if (ev.type === "chunk") out.textContent += ev.text;
+        else if (ev.type === "status") status.textContent = ev.text;
+        else if (ev.type === "error") { out.classList.add("err"); out.textContent += `\n[${ev.error.code}] ${ev.error.message}`; }
+        else if (ev.type === "done") {
+          const u = ev.usage && ev.usage.llm;
+          status.textContent = `${((performance.now() - t0) / 1000).toFixed(1)} วินาที` +
+            (u ? ` · LLM ${u.calls} ครั้ง, token เข้า ${u.input_tokens} / ออก ${u.output_tokens}` : "") + (ev.used_skill ? " · ใช้สูตร" : "");
+          if (ev.export) {
+            const a = document.createElement("a"); a.href = ev.export.download_url; a.textContent = "ดาวน์โหลด " + ev.export.filename;
+            status.after(a);
+          }
+        }
+      }
+    }
+  } catch (e) { out.classList.add("err"); out.textContent += "\n" + e.message; }
+  finally { $("btnSend").disabled = false; refresh(); }
+}
+$("btnSend").onclick = send;
+$("msg").addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); } });
+
+refresh().catch(e => alertBox(e.message));
+</script>
+</body>
+</html>

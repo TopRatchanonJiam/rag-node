@@ -1,0 +1,10 @@
+# key และข้อมูลจริง — ห้าม commit
+.env
+data/
+
+__pycache__/
+*.pyc
+.venv/
+*.log
+.DS_Store
+Thumbs.db

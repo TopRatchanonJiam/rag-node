@@ -1,0 +1,17 @@
+services:
+  node:
+    build: .
+    image: rag-node:latest
+    container_name: rag-node
+    # key ของลูกค้าทั้งหมด + CENTRAL_URL + LICENSE_KEY + NODE_PASSWORD
+    env_file: .env
+    ports:
+      # ค่าเริ่มต้นเปิดเฉพาะเครื่องตัวเอง — ถ้าจะให้เครื่องอื่นเข้าได้ ตั้ง NODE_BIND=0.0.0.0
+      - "${NODE_BIND:-127.0.0.1}:8080:8080"
+    volumes:
+      # state.json, ไฟล์ต้นฉบับ, ไฟล์ export — อยู่รอดข้ามการ rebuild/restart
+      - node-data:/app/data
+    restart: unless-stopped
+
+volumes:
+  node-data:

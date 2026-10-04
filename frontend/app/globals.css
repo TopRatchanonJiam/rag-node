@@ -1,0 +1,56 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+html {
+  scroll-behavior: smooth;
+}
+
+body {
+  @apply bg-slate-50 text-slate-800 antialiased;
+  /* วิญเญ็ตจางๆ บนสุดของหน้า ให้พื้นหลังมีมิติมากกว่าสีเรียบล้วน — จางมากจนแทบไม่รู้ตัว ไม่ใช่การ
+     เพิ่มสี แค่ไล่ความเข้ม-อ่อนของสีเทาเดิม (ตรงตามที่ตกลงไว้: ขาว-ดำล้วน แค่เพิ่มมิติ) */
+  background-image: radial-gradient(ellipse 80% 45% at 50% -8%, rgb(0 0 0 / 0.035), transparent 70%);
+  background-repeat: no-repeat;
+}
+
+::selection {
+  @apply bg-brand-200 text-brand-900;
+}
+
+.scrollbar-thin::-webkit-scrollbar {
+  width: 6px;
+}
+.scrollbar-thin::-webkit-scrollbar-thumb {
+  @apply bg-slate-300 rounded-full;
+}
+
+/* เอฟเฟกต์ fade-up ใช้ทั้งตอนโหลดหน้าแรก (Hero, apply ตรงๆ) และตอน scroll เข้า viewport
+   (ผ่าน components/ui/Reveal.tsx) — รวมไว้ที่เดียวกันเพื่อให้จังหวะ/style ตรงกันทั้งเว็บ */
+@keyframes fade-up {
+  from {
+    opacity: 0;
+    transform: translateY(14px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.reveal {
+  opacity: 0;
+}
+
+.reveal-visible {
+  animation: fade-up 0.6s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .reveal {
+    opacity: 1;
+  }
+  .reveal-visible {
+    animation: none;
+  }
+}

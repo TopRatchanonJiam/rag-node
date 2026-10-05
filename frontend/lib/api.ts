@@ -1,4 +1,4 @@
-import type { AdminStatus, Chatbot, CheckResult, KnowledgeBase, NodeSettings, SkillSet } from "./types";
+import type { AdminStatus, Chatbot, CheckResult, KnowledgeBase, NodeSettings, ProviderCatalogItem, ProviderModel, SkillSet } from "./types";
 
 // หน้าเว็บถูกเสิร์ฟจาก node ตัวเดียวกับ API (origin เดียวกัน) — ใช้ path แบบ relative
 export const API_BASE = (process.env.NEXT_PUBLIC_API_URL || "").replace(/\/$/, "");
@@ -192,11 +192,31 @@ export async function streamChatWithBot(
 
 // ── หลังบ้าน: การเชื่อมต่อ / สถานะ ──────────────────────
 
-// ค่าที่ส่งไปบันทึก: ช่อง key — ไม่ส่ง/ว่าง = ใช้ค่าเดิม, null = ลบ
-export type SettingsInput = Record<string, Record<string, string | number | boolean | null | undefined>>;
+// ค่าที่ส่งไปบันทึก (ส่งเฉพาะส่วนที่แก้) — ช่อง key: ไม่ส่ง/ว่าง = ใช้ค่าเดิม, null = ลบ
+type Primitive = string | number | boolean | null | undefined;
+export type SettingsInput = {
+  providers?: Record<string, Record<string, Primitive>>;
+  models?: Record<string, Record<string, Primitive>>;
+  vector?: Record<string, Primitive>;
+  central?: Record<string, Primitive>;
+};
 
-export async function getSettings(): Promise<{ settings: NodeSettings; kb_count: number }> {
+export async function getSettings(): Promise<{
+  settings: NodeSettings;
+  catalog: Record<string, ProviderCatalogItem>;
+  kb_count: number;
+}> {
   return request("/api/admin/settings");
+}
+
+export async function listProviderModels(
+  providerId: string,
+  credentials?: Record<string, Primitive>
+): Promise<{ models: ProviderModel[] }> {
+  return request(`/api/admin/providers/${encodeURIComponent(providerId)}/models`, {
+    method: "POST",
+    body: JSON.stringify({ credentials: credentials ?? {} }),
+  });
 }
 
 export async function testSettings(settings: SettingsInput): Promise<CheckResult> {

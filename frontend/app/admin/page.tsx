@@ -8,11 +8,6 @@ import { Button } from "@/components/ui/Button";
 import { getAdminStatus, runFullCheck } from "@/lib/api";
 import type { AdminStatus, CheckItem, CheckResult } from "@/lib/types";
 
-const PROVIDER_LABEL: Record<string, string> = {
-  google: "Google Gemini",
-  ollama: "Ollama",
-  openai_compatible: "OpenAI-compatible",
-};
 
 function Panel({ title, action, children }: { title: string; action?: ReactNode; children: ReactNode }) {
   return (
@@ -152,10 +147,10 @@ export default function AdminOverviewPage() {
           }
         >
           <Row label="LLM">
-            {PROVIDER_LABEL[status.models.llm.provider] ?? status.models.llm.provider} · <span className="font-mono text-xs">{status.models.llm.model}</span>
+            {status.provider_labels?.[status.models.llm.provider] ?? status.models.llm.provider} · <span className="font-mono text-xs">{status.models.llm.model}</span>
           </Row>
           <Row label="Embedding">
-            <span className="font-mono text-xs">{status.models.embedding.model}</span> · {status.models.embedding.dim} มิติ
+            {status.provider_labels?.[status.models.embedding.provider] ?? status.models.embedding.provider} · <span className="font-mono text-xs">{status.models.embedding.model}</span> · {status.models.embedding.dim} มิติ
           </Row>
           <Row label="Rerank">{status.models.rerank ? "เปิด" : "ปิด"}</Row>
           <Row label="เอกสารทั้งหมด">

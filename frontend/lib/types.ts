@@ -76,20 +76,36 @@ export interface Chatbot {
 
 export type SecretMask = { set: boolean; hint: string };
 
-export interface ProviderSettings {
-  provider: string;
-  model: string;
+export type ModelRole = "llm" | "embedding" | "rerank";
+
+export interface ProviderCatalogItem {
+  label: string;
+  base_url: string | null;
+  fields: ("api_key" | "base_url")[];
+  roles: ModelRole[];
+  hint: string;
+}
+
+export interface ProviderState {
   base_url: string;
   api_key: SecretMask;
+  configured: boolean;
+}
+
+export interface ModelsSettings {
+  llm: { provider: string; model: string };
+  embedding: { provider: string; model: string; dim: number };
+  rerank: { provider: string; model: string; enabled: boolean };
 }
 
 export interface NodeSettings {
-  llm: ProviderSettings;
-  embedding: ProviderSettings & { dim: number };
-  rerank: { enabled: boolean; model: string; base_url: string; api_key: SecretMask };
+  providers: Record<string, ProviderState>;
+  models: ModelsSettings;
   vector: { url: string; api_key: SecretMask };
   central: { url: string; license_key: SecretMask };
 }
+
+export type ProviderModel = { id: string; kinds: string[] };
 
 export type CheckItem = {
   ok?: boolean | null;
@@ -131,4 +147,5 @@ export interface AdminStatus {
   };
   counts: { kbs: number; files: number; chunks: number; bots: number; skills: number };
   usage: Usage;
+  provider_labels: Record<string, string>;
 }

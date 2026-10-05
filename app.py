@@ -198,9 +198,24 @@ def migrate_legacy_state() -> None:
 # Settings — key เข้ารหัส, แก้ได้จากหน้าเว็บ, มีผลทันที
 # ══════════════════════════════════════════════
 
-SECTIONS = ("llm", "embedding", "rerank", "vector", "central")
+# แบบเดียวกับ Dify: "providers" = key/URL ของแต่ละผู้ให้บริการ (ตั้งครั้งเดียว), "models" = เลือกว่า
+# LLM / Embedding / Rerank ใช้ผู้ให้บริการไหนกับโมเดลอะไร — เปลี่ยนโมเดลได้โดยไม่ต้องกรอก key ซ้ำ
+SECTIONS = ("providers", "models", "vector", "central")
 SECRET_FIELDS = {"api_key", "license_key"}
 _settings_cache: dict | None = None
+
+PROVIDER_CATALOG: dict[str, dict] = {
+    "google": {"label": "Google Gemini", "base_url": None, "fields": ["api_key"], "roles": ["llm", "embedding"],
+               "hint": "สร้าง key ที่ aistudio.google.com"},
+    "openai": {"label": "OpenAI", "base_url": "https://api.openai.com/v1", "fields": ["api_key"], "roles": ["llm", "embedding"],
+               "hint": "สร้าง key ที่ platform.openai.com"},
+    "siliconflow": {"label": "SiliconFlow", "base_url": "https://api.siliconflow.com/v1", "fields": ["api_key"],
+                    "roles": ["llm", "embedding", "rerank"], "hint": "สร้าง key ที่ cloud.siliconflow.com"},
+    "ollama": {"label": "Ollama", "base_url": None, "fields": ["base_url"], "roles": ["llm", "embedding"],
+               "hint": "เซิร์ฟเวอร์ในองค์กร เช่น http://192.168.1.10:11434 (ไม่ต้องใส่ /v1)"},
+    "custom": {"label": "OpenAI-compatible อื่น ๆ", "base_url": None, "fields": ["base_url", "api_key"],
+               "roles": ["llm", "embedding", "rerank"], "hint": "เช่น LM Studio, vLLM, OpenRouter — URL ปกติลงท้ายด้วย /v1"},
+}
 
 
 def _fernet() -> Fernet:
@@ -234,9 +249,42 @@ def _env(name: str, default: str = "") -> str:
     return (os.environ.get(name) or default).strip()
 
 
+def _provider_id_for(cfg: dict) -> str:
+    provider = (cfg.get("provider") or "").lower()
+    base = (cfg.get("base_url") or "").lower()
+    if provider in ("google", "ollama"):
+        return provider
+    if "siliconflow" in base:
+        return "siliconflow"
+    if "api.openai.com" in base:
+        return "openai"
+    return "custom"
+
+
+def _from_role_schema(old: dict) -> dict:
+    """แปลงการตั้งค่ารุ่นก่อน (llm/embedding/rerank แยกกันพร้อม key ในตัว) เป็น providers + models"""
+    providers = {pid: {"api_key": "", "base_url": ""} for pid in PROVIDER_CATALOG}
+    models: dict = {}
+    for role in ("llm", "embedding", "rerank"):
+        cfg = old.get(role) or {}
+        pid = _provider_id_for(cfg) if (cfg.get("base_url") or role != "rerank") else "siliconflow"
+        if role == "rerank" and pid not in ("siliconflow", "custom"):
+            pid = "custom"
+        if cfg.get("api_key"):
+            providers[pid]["api_key"] = cfg["api_key"]
+        if pid in ("ollama", "custom") and cfg.get("base_url"):
+            providers[pid]["base_url"] = cfg["base_url"]
+        models[role] = {"provider": pid, "model": cfg.get("model", "")}
+    models["embedding"]["dim"] = int((old.get("embedding") or {}).get("dim") or 0)
+    models["rerank"]["enabled"] = bool((old.get("rerank") or {}).get("enabled"))
+    return {"providers": providers, "models": models,
+            "vector": old.get("vector") or {"url": "", "api_key": ""},
+            "central": old.get("central") or {"url": "", "license_key": ""}}
+
+
 def _defaults_from_env() -> dict:
-    """ค่าเริ่มต้นครั้งแรกจาก .env — node ที่ติดตั้งไว้แล้วจึงย้ายมาใช้ Settings ได้โดยไม่ต้องตั้งใหม่"""
-    return {
+    """ค่าเริ่มต้นครั้งแรกจาก .env — node ที่ติดตั้งไว้แล้วจึงย้ายมาใช้หน้าตั้งค่าได้โดยไม่ต้องกรอกใหม่"""
+    return _from_role_schema({
         "llm": {"provider": _env("LLM_PROVIDER", "google"), "model": _env("LLM_MODEL", "gemini-2.5-flash"),
                 "api_key": _env("LLM_API_KEY"), "base_url": _env("LLM_BASE_URL")},
         "embedding": {"provider": _env("EMBED_PROVIDER", "openai_compatible"),
@@ -248,16 +296,22 @@ def _defaults_from_env() -> dict:
                    "base_url": _env("RERANK_BASE_URL", "https://api.siliconflow.com/v1")},
         "vector": {"url": _env("QDRANT_URL"), "api_key": _env("QDRANT_API_KEY")},
         "central": {"url": _env("CENTRAL_URL", "http://127.0.0.1:9000"), "license_key": _env("LICENSE_KEY")},
-    }
+    })
+
+
+def _secret_map(section: str, values: dict, fn) -> dict:
+    if section == "providers":
+        return {pid: {k: (fn(v) if k in SECRET_FIELDS else v) for k, v in prov.items()} for pid, prov in values.items()}
+    return {k: (fn(v) if k in SECRET_FIELDS else v) for k, v in values.items()}
 
 
 def _write_settings(settings: dict) -> None:
     global _settings_cache
     with _db_lock, _db() as c:
         for section in SECTIONS:
-            stored = {k: (_enc(v) if k in SECRET_FIELDS else v) for k, v in settings[section].items()}
             c.execute("INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
-                      (section, json.dumps(stored, ensure_ascii=False)))
+                      (section, json.dumps(_secret_map(section, settings[section], _enc), ensure_ascii=False)))
+        c.execute("DELETE FROM settings WHERE key IN ('llm', 'embedding', 'rerank')")
     _settings_cache = None
 
 
@@ -271,12 +325,20 @@ def load_settings() -> dict:
     if not rows:
         _write_settings(_defaults_from_env())
         return load_settings()
-    defaults = _defaults_from_env()
-    settings = {}
-    for section in SECTIONS:
-        raw = json.loads(rows.get(section, "{}"))
-        merged = {**{k: ("" if k in SECRET_FIELDS else v) for k, v in defaults[section].items()}, **raw}
-        settings[section] = {k: (_dec(v) if k in SECRET_FIELDS else v) for k, v in merged.items()}
+    if "llm" in rows:  # รูปแบบรุ่นก่อน → แปลงครั้งเดียว
+        old = {k: _secret_map(k, json.loads(v), _dec) for k, v in rows.items() if k != "providers"}
+        _write_settings(_from_role_schema(old))
+        return load_settings()
+    settings = {s: _secret_map(s, json.loads(rows.get(s, "{}")), _dec) for s in SECTIONS}
+    for pid in PROVIDER_CATALOG:
+        settings["providers"].setdefault(pid, {"api_key": "", "base_url": ""})
+    models = settings["models"]
+    models.setdefault("llm", {"provider": "google", "model": ""})
+    models.setdefault("embedding", {"provider": "siliconflow", "model": "", "dim": 0})
+    models.setdefault("rerank", {"provider": "siliconflow", "model": "", "enabled": False})
+    for section, secret in (("vector", "api_key"), ("central", "license_key")):
+        settings[section].setdefault("url", "")
+        settings[section].setdefault(secret, "")
     _settings_cache = settings
     return settings
 
@@ -285,47 +347,84 @@ def _mask(value: str) -> dict:
     return {"set": bool(value), "hint": f"••••{value[-4:]}" if len(value) >= 8 else ("••••" if value else "")}
 
 
+def provider_configured(pid: str, prov: dict) -> bool:
+    fields = PROVIDER_CATALOG[pid]["fields"]
+    if "base_url" in fields and not prov.get("base_url"):
+        return False
+    if pid in ("google", "openai", "siliconflow") and not prov.get("api_key"):
+        return False
+    return True
+
+
 def public_settings(settings: dict) -> dict:
-    return {section: {k: (_mask(v) if k in SECRET_FIELDS else v) for k, v in values.items()}
-            for section, values in settings.items()}
+    return {
+        "providers": {pid: {"base_url": prov.get("base_url", ""), "api_key": _mask(prov.get("api_key", "")),
+                            "configured": provider_configured(pid, prov)}
+                      for pid, prov in settings["providers"].items() if pid in PROVIDER_CATALOG},
+        "models": settings["models"],
+        "vector": {"url": settings["vector"].get("url", ""), "api_key": _mask(settings["vector"].get("api_key", ""))},
+        "central": {"url": settings["central"].get("url", ""), "license_key": _mask(settings["central"].get("license_key", ""))},
+    }
+
+
+def _apply_secret(target: dict, key: str, value) -> None:
+    """ช่อง key: ไม่ส่ง/ส่งว่าง = ใช้ค่าเดิม, ส่ง null = ลบ"""
+    if value is None:
+        target[key] = ""
+    elif isinstance(value, str) and value.strip():
+        target[key] = value.strip()
 
 
 def merge_settings(current: dict, incoming: dict) -> dict:
-    """รวมค่าที่ส่งมาจากฟอร์มเข้ากับค่าเดิม — ช่อง key: ไม่ส่ง/ส่งว่าง = ใช้ค่าเดิม, ส่ง null = ลบ"""
-    merged = {s: dict(current[s]) for s in SECTIONS}
-    for section in SECTIONS:
+    merged = json.loads(json.dumps(current))
+    for pid, values in (incoming.get("providers") or {}).items():
+        if pid not in PROVIDER_CATALOG:
+            continue
+        prov = merged["providers"].setdefault(pid, {"api_key": "", "base_url": ""})
+        if "api_key" in values:
+            _apply_secret(prov, "api_key", values["api_key"])
+        if "base_url" in values:
+            prov["base_url"] = (values["base_url"] or "").strip()
+    for role, values in (incoming.get("models") or {}).items():
+        if role not in ("llm", "embedding", "rerank"):
+            continue
+        m = merged["models"].setdefault(role, {})
+        if "provider" in values and values["provider"] in PROVIDER_CATALOG:
+            m["provider"] = values["provider"]
+        if "model" in values:
+            m["model"] = (values["model"] or "").strip()
+        if role == "embedding" and "dim" in values:
+            m["dim"] = int(values["dim"] or 0)
+        if role == "rerank" and "enabled" in values:
+            m["enabled"] = bool(values["enabled"])
+    for section, secret in (("vector", "api_key"), ("central", "license_key")):
         for k, v in (incoming.get(section) or {}).items():
-            if k not in merged[section]:
-                continue
-            if k in SECRET_FIELDS:
-                if v is None:
-                    merged[section][k] = ""
-                elif isinstance(v, str) and v.strip():
-                    merged[section][k] = v.strip()
-            elif k == "dim":
-                merged[section][k] = int(v or 0)
-            elif k == "enabled":
-                merged[section][k] = bool(v)
-            else:
-                merged[section][k] = (v or "").strip() if isinstance(v, str) else v
+            if k == secret:
+                _apply_secret(merged[section], k, v)
+            elif k == "url":
+                merged[section]["url"] = (v or "").strip()
     return merged
 
 
-def _provider_cfg(cfg: dict) -> dict:
-    """แปลงค่าที่ผู้ใช้เลือกให้อยู่ในรูปที่ central รับได้ — ollama = endpoint แบบ OpenAI ที่ /v1
-    (ทำที่ node เพื่อให้ใช้ได้แม้ central ยังเป็นรุ่นที่ไม่รู้จัก ollama) และเซิร์ฟเวอร์ในเครื่องที่ไม่ใช้ key"""
-    provider = (cfg.get("provider") or "").lower()
-    out = {"provider": provider, "model": cfg.get("model", ""), "api_key": cfg.get("api_key", "")}
-    base = (cfg.get("base_url") or "").strip()
-    if provider == "ollama":
-        base = (base or "http://localhost:11434").rstrip("/")
-        if not base.endswith("/v1"):
-            base += "/v1"
-        out["provider"] = "openai_compatible"
-        out["api_key"] = out["api_key"] or "ollama"
-    elif provider == "openai_compatible":
-        out["api_key"] = out["api_key"] or "not-needed"
-    if base and provider != "google":
+def _endpoint(pid: str, prov: dict) -> tuple[str, str | None, str]:
+    """(provider ที่ central รู้จัก, base_url, api_key) — ollama/อื่น ๆ ใช้ endpoint แบบ OpenAI
+    (แปลงที่ node เพื่อให้ใช้ได้แม้ central ยังเป็นรุ่นที่ไม่รู้จัก ollama)"""
+    key = prov.get("api_key", "")
+    if pid == "google":
+        return "google", None, key
+    if pid == "ollama":
+        base = (prov.get("base_url") or "http://localhost:11434").rstrip("/")
+        return "openai_compatible", base if base.endswith("/v1") else f"{base}/v1", key or "ollama"
+    base = PROVIDER_CATALOG[pid]["base_url"] or (prov.get("base_url") or "").rstrip("/")
+    return "openai_compatible", base or None, key or "not-needed"
+
+
+def _role_creds(s: dict, role: str) -> dict:
+    m = s["models"][role]
+    pid = m.get("provider") if m.get("provider") in PROVIDER_CATALOG else "custom"
+    kind, base, key = _endpoint(pid, s["providers"].get(pid, {}))
+    out = {"provider": kind, "model": m.get("model", ""), "api_key": key}
+    if base:
         out["base_url"] = base
     return out
 
@@ -333,19 +432,63 @@ def _provider_cfg(cfg: dict) -> dict:
 def credentials(settings: dict | None = None) -> dict:
     s = settings or load_settings()
     creds = {
-        "llm": _provider_cfg(s["llm"]),
-        "embedding": _provider_cfg(s["embedding"]),
+        "llm": _role_creds(s, "llm"),
+        "embedding": _role_creds(s, "embedding"),
         "vector": {"url": s["vector"].get("url", ""), "api_key": s["vector"].get("api_key") or None},
     }
-    rr = s["rerank"]
-    if rr.get("enabled") and rr.get("api_key"):
-        creds["rerank"] = {"api_key": rr["api_key"], "model": rr.get("model") or None, "base_url": rr.get("base_url") or None}
+    rr = s["models"]["rerank"]
+    if rr.get("enabled") and rr.get("model"):
+        c = _role_creds(s, "rerank")
+        creds["rerank"] = {"api_key": c["api_key"], "model": c["model"], "base_url": c.get("base_url")}
     return creds
 
 
 def embedding_lock_info(settings: dict) -> dict:
-    return {"provider": settings["embedding"].get("provider"), "model": settings["embedding"].get("model"),
-            "dim": int(settings["embedding"].get("dim") or 0)}
+    e = settings["models"]["embedding"]
+    return {"provider": e.get("provider"), "model": e.get("model"), "dim": int(e.get("dim") or 0)}
+
+
+def _guess_kinds(model_id: str) -> list[str]:
+    mid = model_id.lower()
+    if "rerank" in mid:
+        return ["rerank"]
+    if any(w in mid for w in ("embed", "bge-", "/bge", "e5-", "gte-", "minilm")):
+        return ["embedding"]
+    return ["llm"]
+
+
+def list_provider_models(pid: str, prov: dict) -> list[dict]:
+    """ดึงรายชื่อโมเดลจากผู้ให้บริการโดยตรง (ใช้แสดงตัวเลือกในหน้าตั้งค่าเท่านั้น)"""
+    try:
+        if pid == "google":
+            if not prov.get("api_key"):
+                raise HTTPException(400, "ใส่ API key ก่อน")
+            r = httpx.get("https://generativelanguage.googleapis.com/v1beta/models",
+                          params={"key": prov["api_key"], "pageSize": 1000}, timeout=15)
+            r.raise_for_status()
+            out = []
+            for m in r.json().get("models", []):
+                methods = m.get("supportedGenerationMethods", [])
+                kinds = (["llm"] if "generateContent" in methods else []) + (["embedding"] if "embedContent" in methods else [])
+                if kinds:
+                    out.append({"id": m["name"].removeprefix("models/"), "kinds": kinds})
+            return sorted(out, key=lambda x: x["id"])
+        _, base, key = _endpoint(pid, prov)
+        if not base:
+            raise HTTPException(400, "ใส่ URL ของเซิร์ฟเวอร์ก่อน")
+        headers = {"Authorization": f"Bearer {key}"} if key and key not in ("ollama", "not-needed") else {}
+        r = httpx.get(f"{base}/models", headers=headers, timeout=15)
+        r.raise_for_status()
+        return sorted(({"id": m["id"], "kinds": _guess_kinds(m["id"])} for m in r.json().get("data", [])),
+                      key=lambda x: x["id"])
+    except httpx.HTTPStatusError as e:
+        code = e.response.status_code
+        msg = ("API key ไม่ถูกต้องหรือไม่มีสิทธิ์" if code in (401, 403)
+               else "ไม่พบ endpoint — ตรวจ URL (ปกติลงท้ายด้วย /v1)" if code == 404
+               else f"ผู้ให้บริการตอบ {code}")
+        raise HTTPException(400, msg)
+    except httpx.HTTPError as e:
+        raise HTTPException(400, f"ติดต่อผู้ให้บริการไม่ได้ ({type(e).__name__}) — ตรวจ URL และเครือข่าย")
 
 
 # ══════════════════════════════════════════════
@@ -467,7 +610,15 @@ def healthz():
 @app.get("/api/admin/settings")
 def get_settings():
     s = load_settings()
-    return {"settings": public_settings(s), "kb_count": len(db_all("kbs"))}
+    return {"settings": public_settings(s), "catalog": PROVIDER_CATALOG, "kb_count": len(db_all("kbs"))}
+
+
+@app.post("/api/admin/providers/{pid}/models")
+def provider_models(pid: str, body: dict = Body(default={})):
+    if pid not in PROVIDER_CATALOG:
+        raise HTTPException(404, "ไม่รู้จักผู้ให้บริการนี้")
+    s = merge_settings(load_settings(), {"providers": {pid: body.get("credentials") or {}}})
+    return {"models": list_provider_models(pid, s["providers"][pid])}
 
 
 def _run_check(settings: dict) -> dict:
@@ -491,7 +642,7 @@ def _run_check(settings: dict) -> dict:
         check = central_json("/v1/credentials/check", {"ctx": {"credentials": credentials(settings)}}, settings=settings)
         for k in ("llm", "embedding", "vector", "rerank"):
             out[k] = check.get(k)
-        dim = int(settings["embedding"].get("dim") or 0)
+        dim = int(settings["models"]["embedding"].get("dim") or 0)
         got = (check.get("embedding") or {}).get("dim")
         if got and dim and got != dim:
             out["embedding"]["dim_mismatch"] = {"configured": dim, "actual": got}
@@ -509,7 +660,7 @@ def test_settings(body: dict = Body(default={})):
 def save_settings(body: dict = Body(...)):
     current = load_settings()
     new = merge_settings(current, body.get("settings") or {})
-    if not new["embedding"].get("model") or int(new["embedding"].get("dim") or 0) <= 0:
+    if not new["models"]["embedding"].get("model") or int(new["models"]["embedding"].get("dim") or 0) <= 0:
         raise HTTPException(400, "ต้องระบุโมเดล embedding และจำนวนมิติ (dim)")
 
     # ล็อก embedding ต่อ KB — KB เดิมใช้โมเดลอื่นจะค้นไม่ได้ ต้องยืนยันก่อนเปลี่ยน
@@ -561,9 +712,10 @@ def admin_status():
     return {
         "central": central,
         "license": license_info,
-        "models": {"llm": {"provider": s["llm"].get("provider"), "model": s["llm"].get("model")},
+        "models": {"llm": {"provider": s["models"]["llm"].get("provider"), "model": s["models"]["llm"].get("model")},
                    "embedding": embedding_lock_info(s),
-                   "rerank": bool(s["rerank"].get("enabled") and s["rerank"].get("api_key"))},
+                   "rerank": bool(s["models"]["rerank"].get("enabled") and s["models"]["rerank"].get("model"))},
+        "provider_labels": {pid: c["label"] for pid, c in PROVIDER_CATALOG.items()},
         "counts": {"kbs": len(kbs), "files": sum(len(kb.get("files", {})) for kb in kbs),
                    "chunks": sum(f.get("chunks", 0) for kb in kbs for f in kb.get("files", {}).values()),
                    "bots": len(db_all("bots")), "skills": len(db_all("skills"))},
@@ -592,7 +744,7 @@ def _kb_out(kb: dict, with_files: bool = False) -> dict:
         "collection_name": kb["collection_name"], "created_at": kb["created_at"],
         "file_count": len(files), "chunk_count": sum(f.get("chunks", 0) for f in files.values()),
         "embedding": kb["embedding"],
-        "embedding_matches": kb["embedding"].get("model") == load_settings()["embedding"].get("model"),
+        "embedding_matches": kb["embedding"].get("model") == load_settings()["models"]["embedding"].get("model"),
     }
     if with_files:
         out["files"] = [{"name": n, "size": f.get("size", 0), "type": Path(n).suffix.lstrip("."),
@@ -689,7 +841,7 @@ def upload_to_kb(kb_id: str, file: UploadFile = File(...)):
     suffix = Path(filename).suffix.lower()
     if suffix not in KB_ALLOWED:
         raise HTTPException(400, f"รองรับเฉพาะ {', '.join(KB_ALLOWED)} เท่านั้น")
-    current_model = load_settings()["embedding"].get("model")
+    current_model = load_settings()["models"]["embedding"].get("model")
     if kb["embedding"].get("model") != current_model:
         raise HTTPException(409, f"Knowledge Base นี้สร้างด้วย embedding '{kb['embedding'].get('model')}' แต่ตอนนี้ตั้งเป็น "
                                  f"'{current_model}' — สร้าง Knowledge Base ใหม่เพื่อใช้ embedding ตัวใหม่")
@@ -972,7 +1124,7 @@ def _cache_stamp(bot: dict) -> dict:
     return {
         "kbs": {k: kbs[k].get("revision", 0) for k in bot["kb_ids"] if k in kbs},
         "skills": {s: skills[s].get("revision", 0) for s in bot["skill_set_ids"] if s in skills},
-        "embed_model": load_settings()["embedding"].get("model"),
+        "embed_model": load_settings()["models"]["embedding"].get("model"),
     }
 
 

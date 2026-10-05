@@ -83,6 +83,16 @@ async def basic_auth(request: Request, call_next):
     return await call_next(request)
 
 
+@app.middleware("http")
+async def no_cache_html(request: Request, call_next):
+    """ห้ามเบราว์เซอร์จำหน้า HTML/API — ไม่งั้นหลังอัปเดตเวอร์ชันจะยังเห็นหน้าเก่าจนกว่าจะกด Ctrl+F5
+    (ไฟล์ใน /_next/static มีชื่อเปลี่ยนทุก build อยู่แล้ว จึง cache ได้ตามปกติ)"""
+    response = await call_next(request)
+    if not request.url.path.startswith("/_next/static/"):
+        response.headers["Cache-Control"] = "no-cache"
+    return response
+
+
 # ══════════════════════════════════════════════
 # SQLite — เก็บแต่ละรายการเป็น JSON ต่อแถว (ตารางละประเภท)
 # ══════════════════════════════════════════════

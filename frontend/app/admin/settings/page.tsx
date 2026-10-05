@@ -2,16 +2,23 @@
 
 import { useCallback, useEffect, useState, type ReactNode } from "react";
 import {
+  Boxes,
   CheckCircle2,
   Cpu,
   Database,
   KeyRound,
+  ListOrdered,
   Loader2,
+  Lock,
+  MessageSquare,
+  Pencil,
   Plus,
   RefreshCw,
   Save,
+  Search,
   Server,
-  Settings2,
+  ShieldAlert,
+  Star,
   Trash2,
   XCircle,
 } from "lucide-react";
@@ -391,6 +398,24 @@ function ModelModal({
 
 // ── กลุ่มโมเดลต่อประเภท ───────────────────────────────
 
+const KIND_STYLE: Record<ModelRole, { icon: ReactNode; tile: string; ring: string }> = {
+  llm: { icon: <MessageSquare size={18} />, tile: "bg-violet-100 text-violet-700", ring: "border-violet-200" },
+  embedding: { icon: <Search size={18} />, tile: "bg-sky-100 text-sky-700", ring: "border-sky-200" },
+  rerank: { icon: <ListOrdered size={18} />, tile: "bg-amber-100 text-amber-700", ring: "border-amber-200" },
+};
+
+const KIND_PLAIN: Record<ModelRole, { what: string; where: string }> = {
+  llm: { what: "สมองของบอท — อ่านเอกสารแล้วเรียบเรียงคำตอบ", where: "เลือกใช้ที่หน้า Chatbots" },
+  embedding: { what: "แปลงเอกสารเป็นตัวเลขเพื่อค้นหา — KB ผูกกับตัวที่เลือกตอนสร้างตลอดไป", where: "เลือกใช้ตอนสร้าง Knowledge Base" },
+  rerank: { what: "จัดลำดับผลค้นหาให้แม่นขึ้น (ไม่บังคับ) — ต้องเป็นเจ้าที่มี /rerank เช่น SiliconFlow", where: "ใช้กับบอทที่เปิด ‘ใช้ Rerank’" },
+};
+
+function lockReason(kind: ModelRole, m: RegistryModel): string | null {
+  if (kind === "embedding" && m.used_by.kbs.length) return `มี KB ใช้อยู่ ${m.used_by.kbs.length} ตัว — ต้องลบ KB เหล่านั้นก่อน`;
+  if (m.used_by.bots.length) return `มีบอทใช้อยู่ ${m.used_by.bots.length} ตัว — ต้องเปลี่ยนโมเดลในบอทก่อน`;
+  return null;
+}
+
 function ModelGroup({
   kind,
   models,
@@ -407,61 +432,208 @@ function ModelGroup({
   onDelete: (m: RegistryModel) => void;
 }) {
   const info = KIND_INFO[kind];
+  const style = KIND_STYLE[kind];
+  const plain = KIND_PLAIN[kind];
   return (
-    <div className="border-b border-accent-100 py-5 first:pt-0 last:border-0 last:pb-0">
-      <div className="mb-3 flex flex-wrap items-start justify-between gap-2">
-        <div>
-          <p className="text-sm font-semibold text-accent-900">{info.title}</p>
-          <p className="mt-0.5 max-w-2xl text-xs text-accent-500">{info.description}</p>
+    <div className={`flex min-w-0 flex-col rounded-xl border bg-white ${style.ring}`}>
+      <div className="flex items-start gap-3 border-b border-accent-100 p-4">
+        <span className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-xl ${style.tile}`}>{style.icon}</span>
+        <div className="min-w-0">
+          <p className="text-sm font-semibold text-accent-900">{info.label}</p>
+          <p className="mt-0.5 text-xs leading-relaxed text-accent-600">{plain.what}</p>
+          <p className="mt-1 text-[11px] font-medium text-accent-400">→ {plain.where}</p>
         </div>
+      </div>
+
+      <div className="flex flex-1 flex-col gap-2.5 p-3">
+        {models.length === 0 && (
+          <p className="rounded-lg bg-accent-50 px-3 py-3 text-center text-xs text-accent-500">
+            ยังไม่มี {info.label}
+            {kind !== "rerank" && <span className="mt-0.5 block font-medium text-amber-700">ต้องมีอย่างน้อย 1 ตัว ระบบถึงจะทำงาน</span>}
+          </p>
+        )}
+        {models.map((m) => {
+          const locked = lockReason(kind, m);
+          const usedNames = [...m.used_by.kbs.map((n) => `KB ${n}`), ...m.used_by.bots.map((n) => `บอท ${n}`)];
+          return (
+            <div key={m.id} className={`rounded-lg border p-3 ${m.is_default ? "border-brand-300 bg-brand-50/40" : "border-accent-200"}`}>
+              <div className="flex items-start justify-between gap-2">
+                <p className="min-w-0 break-words text-sm font-semibold text-accent-900">{m.name}</p>
+                {m.is_default && (
+                  <span className="flex shrink-0 items-center gap-1 rounded-full bg-brand-600 px-2 py-0.5 text-[11px] font-semibold text-white">
+                    <Star size={11} className="fill-white" /> ค่าเริ่มต้น
+                  </span>
+                )}
+              </div>
+              {m.name !== m.model && <p className="mt-1 break-all font-mono text-[11px] text-accent-500">{m.model}</p>}
+              <p className="mt-0.5 text-[11px] text-accent-500">
+                ผ่าน {m.provider_name}
+                {kind === "embedding" && m.dim ? ` · ${m.dim} มิติ` : ""}
+              </p>
+              <p className="mt-2 text-[11px] text-accent-500">
+                {usedNames.length ? (
+                  <>
+                    ใช้อยู่กับ <span className="font-medium text-accent-700">{usedNames.join(", ")}</span>
+                  </>
+                ) : m.is_default ? (
+                  "ใช้กับทุกที่ที่ไม่ได้เลือกโมเดลเฉพาะ"
+                ) : (
+                  "ยังไม่มีใครใช้"
+                )}
+              </p>
+
+              <div className="mt-3 flex flex-wrap items-center gap-1.5 border-t border-accent-100 pt-2.5">
+                {!m.is_default && (
+                  <button type="button" onClick={() => onDefault(m)} className="flex items-center gap-1 rounded-md border border-accent-200 bg-white px-2 py-1 text-xs font-medium text-accent-700 hover:border-brand-300 hover:text-brand-700">
+                    <Star size={12} /> ตั้งเป็นค่าเริ่มต้น
+                  </button>
+                )}
+                <button type="button" onClick={() => onEdit(m)} className="flex items-center gap-1 rounded-md border border-accent-200 bg-white px-2 py-1 text-xs font-medium text-accent-700 hover:border-brand-300 hover:text-brand-700">
+                  <Pencil size={12} /> แก้ไข
+                </button>
+                {locked ? (
+                  <span title={locked} className="ml-auto flex items-center gap-1 px-1 text-[11px] text-accent-400">
+                    <Lock size={11} /> ลบไม่ได้
+                  </span>
+                ) : (
+                  <button type="button" onClick={() => onDelete(m)} className="ml-auto flex items-center gap-1 rounded-md px-2 py-1 text-xs font-medium text-rose-600 hover:bg-rose-50">
+                    <Trash2 size={12} /> ลบ
+                  </button>
+                )}
+              </div>
+              {locked && <p className="mt-1.5 text-[11px] text-accent-400">{locked}</p>}
+            </div>
+          );
+        })}
         <button
           type="button"
           onClick={onAdd}
-          className="flex shrink-0 items-center gap-1 rounded-lg border border-dashed border-accent-300 px-2.5 py-1.5 text-xs font-medium text-accent-600 hover:border-brand-400 hover:text-brand-700"
+          className="mt-auto flex items-center justify-center gap-1.5 rounded-lg border border-dashed border-accent-300 py-2.5 text-sm font-medium text-accent-600 hover:border-brand-400 hover:bg-brand-50/30 hover:text-brand-700"
         >
-          <Plus size={13} /> เพิ่ม {info.label}
+          <Plus size={15} /> เพิ่ม {info.label}
         </button>
       </div>
-      {models.length === 0 ? (
-        <p className="rounded-lg bg-accent-50 px-3 py-2.5 text-xs text-accent-400">ยังไม่มี {info.label}</p>
-      ) : (
-        <div className="overflow-hidden rounded-xl border border-accent-200">
-          {models.map((m) => {
-            const usage = [
-              m.used_by.kbs.length ? `KB: ${m.used_by.kbs.join(", ")}` : "",
-              m.used_by.bots.length ? `บอท: ${m.used_by.bots.join(", ")}` : "",
-            ].filter(Boolean).join(" · ");
-            return (
-              <div key={m.id} className="flex flex-wrap items-center gap-3 border-b border-accent-100 px-4 py-3 last:border-0">
-                <div className="min-w-0 flex-1">
-                  <p className="flex flex-wrap items-center gap-2 text-sm font-medium text-accent-900">
-                    {m.name}
-                    {m.is_default && <span className="rounded bg-brand-600 px-1.5 py-0.5 text-[10px] font-semibold text-white">ค่าเริ่มต้น</span>}
-                  </p>
-                  <p className="mt-0.5 truncate text-xs text-accent-500">
-                    {m.provider_name} · <span className="font-mono">{m.model}</span>
-                    {kind === "embedding" && m.dim ? ` · ${m.dim} มิติ` : ""}
-                  </p>
-                  {usage && <p className="mt-0.5 truncate text-[11px] text-accent-400">ใช้อยู่กับ {usage}</p>}
-                </div>
-                <div className="flex shrink-0 items-center gap-1">
-                  {!m.is_default && (
-                    <button type="button" onClick={() => onDefault(m)} className="rounded-lg px-2 py-1 text-xs font-medium text-accent-500 hover:bg-accent-100 hover:text-accent-800">
-                      ตั้งเป็นค่าเริ่มต้น
-                    </button>
-                  )}
-                  <button type="button" onClick={() => onEdit(m)} title="แก้ไข" className="rounded-lg p-1.5 text-accent-400 hover:bg-accent-100 hover:text-accent-700">
-                    <Settings2 size={15} />
-                  </button>
-                  <button type="button" onClick={() => onDelete(m)} title="ลบ" className="rounded-lg p-1.5 text-accent-400 hover:bg-rose-50 hover:text-rose-600">
-                    <Trash2 size={15} />
-                  </button>
-                </div>
-              </div>
-            );
-          })}
+    </div>
+  );
+}
+
+// ── โครงสร้างพื้นฐาน: แสดงอย่างเดียว กดแก้ไขถึงเปิดฟอร์ม ──────
+
+type InfraKind = "vector" | "central";
+
+function InfraModal({
+  kind,
+  settings,
+  kbCount,
+  onClose,
+  onSaved,
+}: {
+  kind: InfraKind;
+  settings: NodeSettings;
+  kbCount: number;
+  onClose: () => void;
+  onSaved: () => Promise<void>;
+}) {
+  const isVector = kind === "vector";
+  const original = isVector ? settings.vector.url : settings.central.url;
+  const [url, setUrl] = useState(original);
+  const [secret, setSecret] = useState<SecretInput>("");
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const changed = url.trim() !== original || secret !== "";
+
+  async function handleSave() {
+    if (
+      isVector &&
+      url.trim() !== original &&
+      kbCount > 0 &&
+      !window.confirm(`เปลี่ยนที่อยู่ Qdrant แล้ว Knowledge Base ${kbCount} ตัวที่มีอยู่จะหาเอกสารเดิมไม่เจอ (เอกสารยังอยู่ที่ Qdrant ตัวเก่า)\n\nยืนยันเปลี่ยน?`)
+    )
+      return;
+    setBusy(true);
+    setErr(null);
+    try {
+      await saveSettings(isVector ? { vector: { url, api_key: secretOut(secret) } } : { central: { url, license_key: secretOut(secret) } });
+      await onSaved();
+      onClose();
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : "บันทึกไม่สำเร็จ");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Modal title={isVector ? "แก้ไข Qdrant (ที่เก็บเอกสาร)" : "แก้ไข Central และ license"} onClose={onClose}>
+      <div className="flex flex-col gap-4">
+        <p className="flex items-start gap-2 rounded-lg bg-amber-50 px-3 py-2.5 text-xs leading-relaxed text-amber-800">
+          <ShieldAlert size={15} className="mt-px shrink-0" />
+          {isVector
+            ? "ส่วนนี้คือที่เก็บเอกสารของทุก KB — ถ้าใส่ผิด บอทจะค้นหาเอกสารไม่เจอทันที แก้เฉพาะตอนย้ายฐานข้อมูลเท่านั้น"
+            : "ถ้าใส่ผิด ทั้งแชทและการอัปโหลดจะหยุดทำงานทันที — ปกติใส่ครั้งเดียวตอนติดตั้ง หรือตอนได้ license ใหม่"}
+        </p>
+        <Field label={isVector ? "URL" : "ที่อยู่ central"} hint={isVector ? "เช่น https://xxxx.cloud.qdrant.io" : "เช่น http://192.168.30.108:9000"}>
+          <input className="field font-mono text-[13px]" value={url} onChange={(e) => setUrl(e.target.value)} spellCheck={false} />
+        </Field>
+        <SecretField
+          label={isVector ? "API key" : "License key"}
+          mask={isVector ? settings.vector.api_key : settings.central.license_key}
+          value={secret}
+          onChange={setSecret}
+          optional={isVector}
+        />
+        {err && <p className="rounded-lg bg-rose-50 px-3 py-2 text-xs text-rose-700">{err}</p>}
+        <div className="flex justify-end gap-2">
+          <Button variant="secondary" onClick={onClose} disabled={busy}>
+            ยกเลิก
+          </Button>
+          <Button onClick={handleSave} disabled={busy || !changed || !url.trim()}>
+            {busy ? <Loader2 size={15} className="animate-spin" /> : <Save size={15} />} บันทึกและตรวจการเชื่อมต่อ
+          </Button>
         </div>
-      )}
+      </div>
+    </Modal>
+  );
+}
+
+function InfraCard({
+  icon,
+  title,
+  subtitle,
+  rows,
+  status,
+  onEdit,
+}: {
+  icon: ReactNode;
+  title: string;
+  subtitle: string;
+  rows: [string, ReactNode][];
+  status?: CheckItem | null;
+  onEdit: () => void;
+}) {
+  return (
+    <div className="flex flex-col gap-3 rounded-xl border border-accent-200 bg-accent-50/50 p-4">
+      <div className="flex items-start justify-between gap-3">
+        <div className="flex min-w-0 items-start gap-3">
+          <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-white text-accent-500 ring-1 ring-accent-200">{icon}</span>
+          <div className="min-w-0">
+            <p className="text-sm font-semibold text-accent-900">{title}</p>
+            <p className="text-xs text-accent-500">{subtitle}</p>
+          </div>
+        </div>
+        <button type="button" onClick={onEdit} className="flex shrink-0 items-center gap-1 rounded-lg border border-accent-200 bg-white px-2.5 py-1.5 text-xs font-medium text-accent-700 hover:border-brand-300 hover:text-brand-700">
+          <Pencil size={12} /> แก้ไข
+        </button>
+      </div>
+      <dl className="grid gap-1.5 text-xs">
+        {rows.map(([k, v]) => (
+          <div key={k} className="flex min-w-0 gap-2">
+            <dt className="w-20 shrink-0 text-accent-400">{k}</dt>
+            <dd className="min-w-0 break-all font-mono text-accent-700">{v}</dd>
+          </div>
+        ))}
+      </dl>
+      {status && <Result item={status} />}
     </div>
   );
 }
@@ -474,13 +646,7 @@ export default function SettingsPage() {
   const [error, setError] = useState<string | null>(null);
   const [editingConn, setEditingConn] = useState<ProviderConn | "new" | null>(null);
   const [editingModel, setEditingModel] = useState<{ kind: ModelRole; model: RegistryModel | null } | null>(null);
-
-  const [vectorUrl, setVectorUrl] = useState("");
-  const [vectorKey, setVectorKey] = useState<SecretInput>("");
-  const [centralUrl, setCentralUrl] = useState("");
-  const [licenseKey, setLicenseKey] = useState<SecretInput>("");
-  const [savingInfra, setSavingInfra] = useState(false);
-  const [infraNotice, setInfraNotice] = useState<string | null>(null);
+  const [editingInfra, setEditingInfra] = useState<InfraKind | null>(null);
 
   const [check, setCheck] = useState<CheckResult | null>(null);
   const [checking, setChecking] = useState(false);
@@ -489,10 +655,6 @@ export default function SettingsPage() {
     const res = await getSettings();
     setSettings(res.settings);
     setProtocols(res.protocols);
-    setVectorUrl(res.settings.vector.url);
-    setCentralUrl(res.settings.central.url);
-    setVectorKey("");
-    setLicenseKey("");
   }, []);
 
   useEffect(() => {
@@ -508,6 +670,8 @@ export default function SettingsPage() {
   const connections = settings.providers;
   const modelsOf = (kind: ModelRole) => settings.models.filter((m) => m.kind === kind);
   const connUsage = (pid: string) => settings.models.filter((m) => m.provider === pid);
+  const kbCount = new Set(settings.models.flatMap((m) => m.used_by.kbs)).size;
+  const keyText = (mask: SecretMask) => (mask.set ? `${mask.hint} (ตั้งไว้แล้ว)` : "— ไม่ได้ตั้ง —");
 
   async function act(fn: () => Promise<unknown>) {
     setError(null);
@@ -516,23 +680,6 @@ export default function SettingsPage() {
       await load();
     } catch (e) {
       setError(e instanceof Error ? e.message : "ไม่สำเร็จ");
-    }
-  }
-
-  async function handleSaveInfra() {
-    setSavingInfra(true);
-    setError(null);
-    try {
-      await saveSettings({
-        vector: { url: vectorUrl, api_key: secretOut(vectorKey) },
-        central: { url: centralUrl, license_key: secretOut(licenseKey) },
-      });
-      await load();
-      setInfraNotice("บันทึกแล้ว — มีผลทันที");
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "บันทึกไม่สำเร็จ");
-    } finally {
-      setSavingInfra(false);
     }
   }
 
@@ -546,6 +693,11 @@ export default function SettingsPage() {
     } finally {
       setChecking(false);
     }
+  }
+
+  async function afterInfraSave() {
+    await load();
+    await handleCheckAll();
   }
 
   return (
@@ -581,7 +733,7 @@ export default function SettingsPage() {
 
       <div className="flex flex-col gap-5">
         {/* 1) การเชื่อมต่อ */}
-        <Panel icon={<Cpu size={18} />} title="การเชื่อมต่อผู้ให้บริการ" description="กรอกชื่อ / URL / API key — ต่อได้ทุกเจ้าที่ใช้ API แบบ OpenAI รวมถึง Gemini และ Ollama">
+        <Panel icon={<Cpu size={18} />} title="ขั้นที่ 1 · การเชื่อมต่อผู้ให้บริการ" description="กรอกชื่อ / URL / API key — ต่อได้ทุกเจ้าที่ใช้ API แบบ OpenAI รวมถึง Gemini และ Ollama">
           <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
             {connections.map((c) => {
               const used = connUsage(c.id);
@@ -603,7 +755,7 @@ export default function SettingsPage() {
                       onClick={() => setEditingConn(c)}
                       className="flex shrink-0 items-center gap-1 rounded-lg border border-accent-200 bg-white px-2.5 py-1.5 text-xs font-medium text-accent-700 hover:border-brand-300 hover:text-brand-700"
                     >
-                      <Settings2 size={13} /> แก้ไข
+                      <Pencil size={12} /> แก้ไข
                     </button>
                   </div>
                 </div>
@@ -620,51 +772,57 @@ export default function SettingsPage() {
         </Panel>
 
         {/* 2) คลังโมเดล */}
-        <Panel icon={<Server size={18} />} title="คลังโมเดล" description="เพิ่มได้หลายตัวในแต่ละประเภท และเลือกค่าเริ่มต้น — การเลือกใช้จริงอยู่ที่หน้า KB และหน้า Chatbots">
-          {(["llm", "embedding", "rerank"] as ModelRole[]).map((kind) => (
-            <ModelGroup
-              key={kind}
-              kind={kind}
-              models={modelsOf(kind)}
-              onAdd={() => setEditingModel({ kind, model: null })}
-              onEdit={(m) => setEditingModel({ kind, model: m })}
-              onDefault={(m) => act(() => setDefaultModel(m.id))}
-              onDelete={(m) => {
-                if (window.confirm(`ลบ ‘${m.name}’ ออกจากคลังโมเดล?`)) act(() => deleteModel(m.id));
-              }}
-            />
-          ))}
+        <Panel
+          icon={<Boxes size={18} />}
+          title="ขั้นที่ 2 · คลังโมเดล"
+          description="เลือกโมเดลจากการเชื่อมต่อด้านบนมาเก็บไว้เป็นตัวเลือก — ตัวที่ติดดาว ‘ค่าเริ่มต้น’ จะถูกใช้เมื่อ KB/บอทไม่ได้เลือกเฉพาะ"
+        >
+          <div className="grid gap-4 lg:grid-cols-3">
+            {(["llm", "embedding", "rerank"] as ModelRole[]).map((kind) => (
+              <ModelGroup
+                key={kind}
+                kind={kind}
+                models={modelsOf(kind)}
+                onAdd={() => setEditingModel({ kind, model: null })}
+                onEdit={(m) => setEditingModel({ kind, model: m })}
+                onDefault={(m) => act(() => setDefaultModel(m.id))}
+                onDelete={(m) => {
+                  if (window.confirm(`ลบ ‘${m.name}’ ออกจากคลังโมเดล?`)) act(() => deleteModel(m.id));
+                }}
+              />
+            ))}
+          </div>
         </Panel>
 
-        {/* 3) โครงสร้างพื้นฐาน */}
+        {/* 3) โครงสร้างพื้นฐาน — แสดงอย่างเดียว */}
         <Panel
-          icon={<Database size={18} />}
+          icon={<Lock size={18} />}
           title="โครงสร้างพื้นฐาน"
-          description="ที่เก็บเอกสารขององค์กร (Qdrant) และบริการประมวลผลกลาง (central)"
-          action={
-            <div className="flex items-center gap-3">
-              {infraNotice && <span className="flex items-center gap-1 text-xs text-brand-700"><CheckCircle2 size={14} /> {infraNotice}</span>}
-              <Button onClick={handleSaveInfra} disabled={savingInfra}>
-                {savingInfra ? <Loader2 size={15} className="animate-spin" /> : <Save size={15} />} บันทึก
-              </Button>
-            </div>
-          }
+          description="ตั้งครั้งเดียวตอนติดตั้ง — ถ้าแก้ผิดระบบจะหยุดทำงาน จึงต้องกด ‘แก้ไข’ ก่อนถึงจะเปลี่ยนได้"
         >
-          <div className="grid gap-5 lg:grid-cols-2">
-            <div className="flex flex-col gap-3 rounded-xl border border-accent-200 p-4">
-              <p className="text-sm font-semibold text-accent-900">Qdrant (ฐานข้อมูลเวกเตอร์)</p>
-              <Field label="URL">
-                <input className="field" value={vectorUrl} onChange={(e) => { setVectorUrl(e.target.value); setInfraNotice(null); }} placeholder="https://xxxx.cloud.qdrant.io" />
-              </Field>
-              <SecretField label="API key" mask={settings.vector.api_key} value={vectorKey} onChange={(v) => { setVectorKey(v); setInfraNotice(null); }} optional />
-            </div>
-            <div className="flex flex-col gap-3 rounded-xl border border-accent-200 p-4">
-              <p className="text-sm font-semibold text-accent-900">Central และ license</p>
-              <Field label="ที่อยู่ central" hint="เช่น http://192.168.30.108:9000">
-                <input className="field" value={centralUrl} onChange={(e) => { setCentralUrl(e.target.value); setInfraNotice(null); }} />
-              </Field>
-              <SecretField label="License key" mask={settings.central.license_key} value={licenseKey} onChange={(v) => { setLicenseKey(v); setInfraNotice(null); }} />
-            </div>
+          <div className="grid gap-4 lg:grid-cols-2">
+            <InfraCard
+              icon={<Database size={17} />}
+              title="Qdrant"
+              subtitle="ฐานข้อมูลที่เก็บเอกสารของทุก KB"
+              rows={[
+                ["URL", settings.vector.url || "— ไม่ได้ตั้ง —"],
+                ["API key", keyText(settings.vector.api_key)],
+              ]}
+              status={check?.vector}
+              onEdit={() => setEditingInfra("vector")}
+            />
+            <InfraCard
+              icon={<Server size={17} />}
+              title="Central และ license"
+              subtitle="บริการประมวลผลกลาง"
+              rows={[
+                ["ที่อยู่", settings.central.url || "— ไม่ได้ตั้ง —"],
+                ["License", keyText(settings.central.license_key)],
+              ]}
+              status={check?.central && check.license ? (check.central.ok === false ? check.central : check.license) : check?.central}
+              onEdit={() => setEditingInfra("central")}
+            />
           </div>
         </Panel>
       </div>
@@ -674,6 +832,9 @@ export default function SettingsPage() {
       )}
       {editingModel && (
         <ModelModal kind={editingModel.kind} model={editingModel.model} connections={connections} onClose={() => setEditingModel(null)} onSaved={load} />
+      )}
+      {editingInfra && (
+        <InfraModal kind={editingInfra} settings={settings} kbCount={kbCount} onClose={() => setEditingInfra(null)} onSaved={afterInfraSave} />
       )}
     </div>
   );

@@ -22,6 +22,8 @@ export interface KbFile {
   name: string;
   size: number;
   type: string;
+  chunks?: number;
+  uploaded_at?: string | null;
 }
 
 export interface KnowledgeBase {
@@ -33,6 +35,8 @@ export interface KnowledgeBase {
   file_count: number;
   chunk_count: number;
   files?: KbFile[];
+  embedding?: { provider?: string; model?: string; dim?: number };
+  embedding_matches?: boolean;
 }
 
 export interface SkillPreview {
@@ -67,3 +71,64 @@ export interface Chatbot {
   quick_chat_tags: string[];
 }
 
+
+// ── หลังบ้าน: การเชื่อมต่อ ─────────────────────────────
+
+export type SecretMask = { set: boolean; hint: string };
+
+export interface ProviderSettings {
+  provider: string;
+  model: string;
+  base_url: string;
+  api_key: SecretMask;
+}
+
+export interface NodeSettings {
+  llm: ProviderSettings;
+  embedding: ProviderSettings & { dim: number };
+  rerank: { enabled: boolean; model: string; base_url: string; api_key: SecretMask };
+  vector: { url: string; api_key: SecretMask };
+  central: { url: string; license_key: SecretMask };
+}
+
+export type CheckItem = {
+  ok?: boolean | null;
+  message?: string;
+  error_code?: string;
+  code?: string;
+  reply?: string;
+  dim?: number;
+  dim_mismatch?: { configured: number; actual: number };
+  [key: string]: unknown;
+};
+
+export interface CheckResult {
+  central?: CheckItem & { url?: string; api_version?: string };
+  license?: CheckItem & { status?: string; valid_until?: string | null; plan?: string; warnings?: { code: string; message: string }[] };
+  llm?: CheckItem;
+  embedding?: CheckItem;
+  vector?: CheckItem;
+  rerank?: CheckItem;
+}
+
+export interface Usage {
+  llm_input_tokens: number;
+  llm_output_tokens: number;
+  llm_calls: number;
+  embed_tokens: number;
+  embed_calls: number;
+  rerank_calls: number;
+  requests: number;
+}
+
+export interface AdminStatus {
+  central: CheckItem & { url: string; api_version?: string };
+  license: CheckResult["license"];
+  models: {
+    llm: { provider: string; model: string };
+    embedding: { provider: string; model: string; dim: number };
+    rerank: boolean;
+  };
+  counts: { kbs: number; files: number; chunks: number; bots: number; skills: number };
+  usage: Usage;
+}

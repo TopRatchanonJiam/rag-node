@@ -1,13 +1,13 @@
-"""node/app.py — เครื่องลูกค้า (VPS2 หรือเครื่อง local) แบบบาง
+"""node/app.py — เครื่องลูกค้า (node) แบบบาง
 
 หน้าที่:
-- ถือ key ของลูกค้า (LLM / embedding / rerank / Qdrant) ใน .env แล้วแนบไปกับทุก request ถึง central
-- เก็บสถานะของตัวเอง (KB, ชุดสูตร, บอท, cache, usage) ในไฟล์ JSON — ไม่มีฐานข้อมูล
-- เก็บไฟล์ต้นฉบับไว้เผื่อ re-index และเก็บไฟล์ export ที่ central ส่งกลับมา
-- เสิร์ฟหน้าเว็บหมวดแชทบอท (frontend/out — Next.js static export) บน origin เดียวกับ API
+- เก็บการตั้งค่า (provider / key / โมเดล ของ LLM, embedding, rerank, Qdrant, central) ใน SQLite —
+  key เข้ารหัสด้วย Fernet, แก้จากหน้า Settings แล้วมีผลทันทีโดยไม่ต้องรีสตาร์ต
+- เก็บสถานะ (KB, ชุดสูตร, บอท, cache, export, usage) ใน SQLite ไฟล์เดียว (data/node.db)
+- ส่งงานทั้งหมดให้ central ประมวลผล (central ไม่เก็บอะไรของลูกค้า)
+- เสิร์ฟหน้าเว็บ (frontend/out — Next.js static export): หน้าแชทที่ / และหลังบ้านที่ /admin
 
-API ใช้ path และรูปแบบเดียวกับ backend เดิม (/api/kb, /api/skills, /api/bots) เพื่อให้หน้าเว็บเดิม
-ใช้ได้โดยไม่ต้องแก้ — ต่างกันแค่เบื้องหลังไม่ได้ประมวลผลเอง แต่ส่งต่อให้ central
+.env ใช้แค่ค่าตอนติดตั้ง: ค่าเริ่มต้นของ Settings ครั้งแรก, NODE_PASSWORD, NODE_SECRET_KEY (ไม่บังคับ)
 """
 
 from __future__ import annotations
@@ -17,15 +17,18 @@ import json
 import os
 import re
 import secrets
+import sqlite3
 import threading
 import time
 import uuid
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 
 import httpx
+from cryptography.fernet import Fernet, InvalidToken
 from dotenv import load_dotenv
-from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
+from fastapi import Body, FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
@@ -34,13 +37,13 @@ ROOT = Path(__file__).resolve().parent
 load_dotenv(ROOT / ".env")
 
 DATA_DIR = Path(os.environ.get("NODE_DATA_DIR") or ROOT / "data")
-STATE_FILE = DATA_DIR / "state.json"
+DB_FILE = DATA_DIR / "node.db"
+LEGACY_STATE_FILE = DATA_DIR / "state.json"
+SECRET_KEY_FILE = DATA_DIR / "secret.key"
 ORIGINALS_DIR = DATA_DIR / "originals"
 EXPORTS_DIR = DATA_DIR / "exports"
 FRONTEND_DIR = Path(os.environ.get("NODE_FRONTEND_DIR") or ROOT / "frontend" / "out")
 
-CENTRAL_URL = os.environ.get("CENTRAL_URL", "http://127.0.0.1:9000").rstrip("/")
-LICENSE_KEY = os.environ.get("LICENSE_KEY", "")
 NODE_USER = os.environ.get("NODE_USER", "admin")
 NODE_PASSWORD = os.environ.get("NODE_PASSWORD", "")
 
@@ -61,7 +64,7 @@ app = FastAPI(title="RAG Node", docs_url=None, redoc_url=None, openapi_url=None)
 
 
 # ══════════════════════════════════════════════
-# Basic Auth (เปิดเมื่อตั้ง NODE_PASSWORD เท่านั้น)
+# Basic Auth (เปิดเมื่อตั้ง NODE_PASSWORD เท่านั้น — ระบบ login จริงมาในขั้นถัดไป)
 # ══════════════════════════════════════════════
 
 @app.middleware("http")
@@ -81,98 +84,258 @@ async def basic_auth(request: Request, call_next):
 
 
 # ══════════════════════════════════════════════
-# เครื่องปรุงของลูกค้า (จาก .env)
+# SQLite — เก็บแต่ละรายการเป็น JSON ต่อแถว (ตารางละประเภท)
 # ══════════════════════════════════════════════
+
+_TABLES = ("kbs", "skills", "bots", "caches", "exports")
+_db_lock = threading.RLock()
+
+
+@contextmanager
+def _db():
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(DB_FILE, timeout=15)
+    try:
+        yield conn
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def init_db() -> None:
+    with _db_lock, _db() as c:
+        c.execute("PRAGMA journal_mode=WAL")
+        c.execute("CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
+        for t in _TABLES:
+            c.execute(f"CREATE TABLE IF NOT EXISTS {t} (id TEXT PRIMARY KEY, data TEXT NOT NULL)")
+        c.execute("CREATE TABLE IF NOT EXISTS usage (id INTEGER PRIMARY KEY CHECK (id = 1), data TEXT NOT NULL)")
+
+
+def db_all(table: str) -> list[dict]:
+    with _db() as c:
+        return [json.loads(r[0]) for r in c.execute(f"SELECT data FROM {table} ORDER BY rowid")]
+
+
+def db_get(table: str, item_id: str) -> dict | None:
+    with _db() as c:
+        row = c.execute(f"SELECT data FROM {table} WHERE id=?", (item_id,)).fetchone()
+    return json.loads(row[0]) if row else None
+
+
+def db_put(table: str, item_id: str, obj: dict) -> None:
+    with _db_lock, _db() as c:
+        c.execute(
+            f"INSERT INTO {table} (id, data) VALUES (?, ?) ON CONFLICT(id) DO UPDATE SET data=excluded.data",
+            (item_id, json.dumps(obj, ensure_ascii=False)),
+        )
+
+
+def db_delete(table: str, item_id: str) -> None:
+    with _db_lock, _db() as c:
+        c.execute(f"DELETE FROM {table} WHERE id=?", (item_id,))
+
+
+_USAGE_ZERO = {"llm_input_tokens": 0, "llm_output_tokens": 0, "llm_calls": 0,
+               "embed_tokens": 0, "embed_calls": 0, "rerank_calls": 0, "requests": 0}
+
+
+def get_usage() -> dict:
+    with _db() as c:
+        row = c.execute("SELECT data FROM usage WHERE id=1").fetchone()
+    return {**_USAGE_ZERO, **(json.loads(row[0]) if row else {})}
+
+
+def add_usage(usage: dict | None) -> None:
+    if not usage:
+        return
+    with _db_lock:
+        u = get_usage()
+        llm, emb, rr = usage.get("llm") or {}, usage.get("embedding") or {}, usage.get("rerank") or {}
+        u["llm_input_tokens"] += int(llm.get("input_tokens") or 0)
+        u["llm_output_tokens"] += int(llm.get("output_tokens") or 0)
+        u["llm_calls"] += int(llm.get("calls") or 0)
+        u["embed_tokens"] += int(emb.get("tokens") or 0)
+        u["embed_calls"] += int(emb.get("calls") or 0)
+        u["rerank_calls"] += int(rr.get("calls") or 0)
+        u["requests"] += 1
+        with _db() as c:
+            c.execute("INSERT INTO usage (id, data) VALUES (1, ?) ON CONFLICT(id) DO UPDATE SET data=excluded.data",
+                      (json.dumps(u),))
+
+
+def migrate_legacy_state() -> None:
+    """ย้ายข้อมูลจาก state.json (รุ่นก่อน) เข้า SQLite ครั้งเดียว แล้วเปลี่ยนชื่อไฟล์เดิมเก็บไว้"""
+    if not LEGACY_STATE_FILE.exists() or db_all("kbs") or db_all("bots"):
+        return
+    state = json.loads(LEGACY_STATE_FILE.read_text(encoding="utf-8"))
+    for table in _TABLES:
+        for item_id, obj in (state.get(table) or {}).items():
+            db_put(table, item_id, obj)
+    if state.get("usage"):
+        with _db() as c:
+            c.execute("INSERT OR REPLACE INTO usage (id, data) VALUES (1, ?)", (json.dumps(state["usage"]),))
+    LEGACY_STATE_FILE.rename(LEGACY_STATE_FILE.with_suffix(".json.migrated"))
+
+
+# ══════════════════════════════════════════════
+# Settings — key เข้ารหัส, แก้ได้จากหน้าเว็บ, มีผลทันที
+# ══════════════════════════════════════════════
+
+SECTIONS = ("llm", "embedding", "rerank", "vector", "central")
+SECRET_FIELDS = {"api_key", "license_key"}
+_settings_cache: dict | None = None
+
+
+def _fernet() -> Fernet:
+    key = os.environ.get("NODE_SECRET_KEY", "").strip()
+    if not key:
+        if not SECRET_KEY_FILE.exists():
+            DATA_DIR.mkdir(parents=True, exist_ok=True)
+            SECRET_KEY_FILE.write_bytes(Fernet.generate_key())
+            try:
+                os.chmod(SECRET_KEY_FILE, 0o600)
+            except OSError:
+                pass
+        key = SECRET_KEY_FILE.read_text().strip()
+    return Fernet(key.encode())
+
+
+def _enc(value: str) -> str:
+    return "enc:" + _fernet().encrypt(value.encode()).decode() if value else ""
+
+
+def _dec(value: str) -> str:
+    if not value or not value.startswith("enc:"):
+        return value or ""
+    try:
+        return _fernet().decrypt(value[4:].encode()).decode()
+    except InvalidToken:
+        return ""
+
 
 def _env(name: str, default: str = "") -> str:
     return (os.environ.get(name) or default).strip()
 
 
-def embedding_config() -> dict:
+def _defaults_from_env() -> dict:
+    """ค่าเริ่มต้นครั้งแรกจาก .env — node ที่ติดตั้งไว้แล้วจึงย้ายมาใช้ Settings ได้โดยไม่ต้องตั้งใหม่"""
     return {
-        "provider": _env("EMBED_PROVIDER", "openai_compatible"),
-        "model": _env("EMBED_MODEL"),
-        "api_key": _env("EMBED_API_KEY"),
-        "base_url": _env("EMBED_BASE_URL") or None,
-        "dim": int(_env("EMBED_DIM", "0") or 0),
+        "llm": {"provider": _env("LLM_PROVIDER", "google"), "model": _env("LLM_MODEL", "gemini-2.5-flash"),
+                "api_key": _env("LLM_API_KEY"), "base_url": _env("LLM_BASE_URL")},
+        "embedding": {"provider": _env("EMBED_PROVIDER", "openai_compatible"),
+                      "model": _env("EMBED_MODEL", "Qwen/Qwen3-Embedding-4B"),
+                      "api_key": _env("EMBED_API_KEY"), "base_url": _env("EMBED_BASE_URL", "https://api.siliconflow.com/v1"),
+                      "dim": int(_env("EMBED_DIM", "2560") or 0)},
+        "rerank": {"enabled": bool(_env("RERANK_API_KEY")), "api_key": _env("RERANK_API_KEY"),
+                   "model": _env("RERANK_MODEL", "Qwen/Qwen3-Reranker-0.6B"),
+                   "base_url": _env("RERANK_BASE_URL", "https://api.siliconflow.com/v1")},
+        "vector": {"url": _env("QDRANT_URL"), "api_key": _env("QDRANT_API_KEY")},
+        "central": {"url": _env("CENTRAL_URL", "http://127.0.0.1:9000"), "license_key": _env("LICENSE_KEY")},
     }
 
 
-def credentials() -> dict:
-    llm = {"provider": _env("LLM_PROVIDER", "google"), "model": _env("LLM_MODEL"), "api_key": _env("LLM_API_KEY")}
-    if _env("LLM_BASE_URL"):
-        llm["base_url"] = _env("LLM_BASE_URL")
-    emb = embedding_config()
+def _write_settings(settings: dict) -> None:
+    global _settings_cache
+    with _db_lock, _db() as c:
+        for section in SECTIONS:
+            stored = {k: (_enc(v) if k in SECRET_FIELDS else v) for k, v in settings[section].items()}
+            c.execute("INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                      (section, json.dumps(stored, ensure_ascii=False)))
+    _settings_cache = None
+
+
+def load_settings() -> dict:
+    """การตั้งค่าแบบถอดรหัสแล้ว (ใช้ภายใน node เท่านั้น ห้ามส่ง key ออกไปหน้าเว็บ)"""
+    global _settings_cache
+    if _settings_cache is not None:
+        return _settings_cache
+    with _db() as c:
+        rows = dict(c.execute("SELECT key, value FROM settings").fetchall())
+    if not rows:
+        _write_settings(_defaults_from_env())
+        return load_settings()
+    defaults = _defaults_from_env()
+    settings = {}
+    for section in SECTIONS:
+        raw = json.loads(rows.get(section, "{}"))
+        merged = {**{k: ("" if k in SECRET_FIELDS else v) for k, v in defaults[section].items()}, **raw}
+        settings[section] = {k: (_dec(v) if k in SECRET_FIELDS else v) for k, v in merged.items()}
+    _settings_cache = settings
+    return settings
+
+
+def _mask(value: str) -> dict:
+    return {"set": bool(value), "hint": f"••••{value[-4:]}" if len(value) >= 8 else ("••••" if value else "")}
+
+
+def public_settings(settings: dict) -> dict:
+    return {section: {k: (_mask(v) if k in SECRET_FIELDS else v) for k, v in values.items()}
+            for section, values in settings.items()}
+
+
+def merge_settings(current: dict, incoming: dict) -> dict:
+    """รวมค่าที่ส่งมาจากฟอร์มเข้ากับค่าเดิม — ช่อง key: ไม่ส่ง/ส่งว่าง = ใช้ค่าเดิม, ส่ง null = ลบ"""
+    merged = {s: dict(current[s]) for s in SECTIONS}
+    for section in SECTIONS:
+        for k, v in (incoming.get(section) or {}).items():
+            if k not in merged[section]:
+                continue
+            if k in SECRET_FIELDS:
+                if v is None:
+                    merged[section][k] = ""
+                elif isinstance(v, str) and v.strip():
+                    merged[section][k] = v.strip()
+            elif k == "dim":
+                merged[section][k] = int(v or 0)
+            elif k == "enabled":
+                merged[section][k] = bool(v)
+            else:
+                merged[section][k] = (v or "").strip() if isinstance(v, str) else v
+    return merged
+
+
+def _provider_cfg(cfg: dict) -> dict:
+    """แปลงค่าที่ผู้ใช้เลือกให้อยู่ในรูปที่ central รับได้ — ollama = endpoint แบบ OpenAI ที่ /v1
+    (ทำที่ node เพื่อให้ใช้ได้แม้ central ยังเป็นรุ่นที่ไม่รู้จัก ollama) และเซิร์ฟเวอร์ในเครื่องที่ไม่ใช้ key"""
+    provider = (cfg.get("provider") or "").lower()
+    out = {"provider": provider, "model": cfg.get("model", ""), "api_key": cfg.get("api_key", "")}
+    base = (cfg.get("base_url") or "").strip()
+    if provider == "ollama":
+        base = (base or "http://localhost:11434").rstrip("/")
+        if not base.endswith("/v1"):
+            base += "/v1"
+        out["provider"] = "openai_compatible"
+        out["api_key"] = out["api_key"] or "ollama"
+    elif provider == "openai_compatible":
+        out["api_key"] = out["api_key"] or "not-needed"
+    if base and provider != "google":
+        out["base_url"] = base
+    return out
+
+
+def credentials(settings: dict | None = None) -> dict:
+    s = settings or load_settings()
     creds = {
-        "llm": llm,
-        "embedding": {k: v for k, v in emb.items() if k != "dim" and v},
-        "vector": {"url": _env("QDRANT_URL"), "api_key": _env("QDRANT_API_KEY") or None},
+        "llm": _provider_cfg(s["llm"]),
+        "embedding": _provider_cfg(s["embedding"]),
+        "vector": {"url": s["vector"].get("url", ""), "api_key": s["vector"].get("api_key") or None},
     }
-    if _env("RERANK_API_KEY"):
-        creds["rerank"] = {"api_key": _env("RERANK_API_KEY"), "model": _env("RERANK_MODEL") or None,
-                           "base_url": _env("RERANK_BASE_URL") or None}
+    rr = s["rerank"]
+    if rr.get("enabled") and rr.get("api_key"):
+        creds["rerank"] = {"api_key": rr["api_key"], "model": rr.get("model") or None, "base_url": rr.get("base_url") or None}
     return creds
 
 
-# ══════════════════════════════════════════════
-# State (ไฟล์ JSON)
-# ══════════════════════════════════════════════
-
-_state_lock = threading.RLock()
-
-
-def _now() -> str:
-    return datetime.now(timezone.utc).isoformat()
-
-
-def load_state() -> dict:
-    with _state_lock:
-        state = json.loads(STATE_FILE.read_text(encoding="utf-8")) if STATE_FILE.exists() else {}
-        for key in ("kbs", "skills", "bots", "caches", "exports"):
-            state.setdefault(key, {})
-        state.setdefault("usage", {"llm_input_tokens": 0, "llm_output_tokens": 0, "llm_calls": 0,
-                                   "embed_tokens": 0, "embed_calls": 0, "rerank_calls": 0, "requests": 0})
-        return state
-
-
-def save_state(state: dict) -> None:
-    with _state_lock:
-        DATA_DIR.mkdir(parents=True, exist_ok=True)
-        tmp = STATE_FILE.with_suffix(".tmp")
-        tmp.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
-        tmp.replace(STATE_FILE)
-
-
-def add_usage(state: dict, usage: dict | None) -> None:
-    if not usage:
-        return
-    u = state["usage"]
-    llm, emb, rr = usage.get("llm") or {}, usage.get("embedding") or {}, usage.get("rerank") or {}
-    u["llm_input_tokens"] += int(llm.get("input_tokens") or 0)
-    u["llm_output_tokens"] += int(llm.get("output_tokens") or 0)
-    u["llm_calls"] += int(llm.get("calls") or 0)
-    u["embed_tokens"] += int(emb.get("tokens") or 0)
-    u["embed_calls"] += int(emb.get("calls") or 0)
-    u["rerank_calls"] += int(rr.get("calls") or 0)
-    u["requests"] += 1
-
-
-def _new_id() -> str:
-    return uuid.uuid4().hex[:12]
-
-
-def _safe_filename(name: str) -> str:
-    name = Path(name or "").name
-    if not name or name in {".", ".."}:
-        raise HTTPException(400, "ชื่อไฟล์ไม่ถูกต้อง")
-    return name
+def embedding_lock_info(settings: dict) -> dict:
+    return {"provider": settings["embedding"].get("provider"), "model": settings["embedding"].get("model"),
+            "dim": int(settings["embedding"].get("dim") or 0)}
 
 
 # ══════════════════════════════════════════════
 # Central client
 # ══════════════════════════════════════════════
 
-_token: dict = {"value": None, "exp": 0.0}
+_tokens: dict[tuple, dict] = {}
 _token_lock = threading.Lock()
 
 
@@ -197,32 +360,45 @@ def _raise_for(resp: httpx.Response):
     raise CentralError(resp.status_code, err.get("code") or "central_error", err.get("message") or f"central ตอบ {resp.status_code}")
 
 
-def get_token(force: bool = False) -> str:
+def _central(settings: dict | None = None) -> tuple[str, str]:
+    c = (settings or load_settings())["central"]
+    return (c.get("url") or "").rstrip("/"), c.get("license_key") or ""
+
+
+def get_token(force: bool = False, settings: dict | None = None) -> str:
+    url, lic = _central(settings)
+    cache_key = (url, lic)
     with _token_lock:
-        if not force and _token["value"] and _token["exp"] - 60 > time.time():
-            return _token["value"]
-        _token["value"] = None
-        if not LICENSE_KEY:
-            raise CentralError(500, "no_license", "ยังไม่ได้ตั้ง LICENSE_KEY ใน .env ของ node")
+        cached = _tokens.get(cache_key)
+        if not force and cached and cached["exp"] - 60 > time.time():
+            return cached["value"]
+        _tokens.pop(cache_key, None)
+        if not url:
+            raise CentralError(500, "no_central", "ยังไม่ได้ตั้งที่อยู่ central (หลังบ้าน → การเชื่อมต่อ)")
+        if not lic:
+            raise CentralError(500, "no_license", "ยังไม่ได้ใส่ license key (หลังบ้าน → การเชื่อมต่อ)")
         try:
-            resp = httpx.post(f"{CENTRAL_URL}/v1/auth/token", json={"license_key": LICENSE_KEY}, timeout=20)
+            resp = httpx.post(f"{url}/v1/auth/token", json={"license_key": lic}, timeout=20)
         except httpx.HTTPError as e:
-            raise CentralError(502, "central_unreachable", f"ติดต่อ central ที่ {CENTRAL_URL} ไม่ได้ ({type(e).__name__})")
+            raise CentralError(502, "central_unreachable", f"ติดต่อ central ที่ {url} ไม่ได้ ({type(e).__name__})")
         _raise_for(resp)
         body = resp.json()
-        _token["value"] = body["access_token"]
-        _token["exp"] = time.time() + int(body.get("expires_in", 900))
-        _token["license"] = body.get("license")
-        _token["warnings"] = body.get("warnings") or []
-        return _token["value"]
+        _tokens[cache_key] = {"value": body["access_token"], "exp": time.time() + int(body.get("expires_in", 900)),
+                              "license": body.get("license"), "warnings": body.get("warnings") or []}
+        return body["access_token"]
 
 
-def central_json(path: str, body: dict) -> dict:
+def token_info(settings: dict | None = None) -> dict:
+    return _tokens.get(_central(settings)) or {}
+
+
+def central_json(path: str, body: dict, settings: dict | None = None) -> dict:
+    url, _ = _central(settings)
     resp = None
     for attempt in range(2):
+        token = get_token(force=attempt > 0, settings=settings)
         try:
-            resp = httpx.post(f"{CENTRAL_URL}{path}", json=body,
-                              headers={"Authorization": f"Bearer {get_token(force=attempt > 0)}"}, timeout=TIMEOUT)
+            resp = httpx.post(f"{url}{path}", json=body, headers={"Authorization": f"Bearer {token}"}, timeout=TIMEOUT)
         except httpx.HTTPError as e:
             raise CentralError(502, "central_unreachable", f"ติดต่อ central ไม่ได้ ({type(e).__name__})")
         if resp.status_code == 401 and attempt == 0:
@@ -240,8 +416,30 @@ def _ctx() -> dict:
     return {"credentials": credentials()}
 
 
+def _now() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _new_id() -> str:
+    return uuid.uuid4().hex[:12]
+
+
+def _safe_filename(name: str) -> str:
+    name = Path(name or "").name
+    if not name or name in {".", ".."}:
+        raise HTTPException(400, "ชื่อไฟล์ไม่ถูกต้อง")
+    return name
+
+
+@app.on_event("startup")
+def _startup():
+    init_db()
+    migrate_legacy_state()
+    load_settings()
+
+
 # ══════════════════════════════════════════════
-# Status
+# หลังบ้าน: การเชื่อมต่อ (Settings) + สถานะ
 # ══════════════════════════════════════════════
 
 @app.get("/healthz")
@@ -249,30 +447,120 @@ def healthz():
     return {"ok": True}
 
 
-@app.get("/api/health")
-def health():
-    out: dict = {"central_url": CENTRAL_URL}
+@app.get("/api/admin/settings")
+def get_settings():
+    s = load_settings()
+    return {"settings": public_settings(s), "kb_count": len(db_all("kbs"))}
+
+
+def _run_check(settings: dict) -> dict:
+    """ตรวจทุกส่วนด้วยการตั้งค่าที่ให้มา (ใช้ได้ทั้งค่าที่บันทึกแล้ว และค่าในฟอร์มที่ยังไม่บันทึก)"""
+    url, _ = _central(settings)
+    out: dict = {"central": {"url": url}}
     try:
-        out["central"] = httpx.get(f"{CENTRAL_URL}/v1/meta", timeout=10).json()
+        meta = httpx.get(f"{url}/v1/meta", timeout=10).json()
+        out["central"].update({"ok": True, "api_version": meta.get("api_version")})
     except Exception as e:
-        out["central"] = {"error": f"ติดต่อ central ไม่ได้: {type(e).__name__}"}
+        out["central"].update({"ok": False, "message": f"ติดต่อ central ไม่ได้ ({type(e).__name__})"})
         return out
     try:
-        get_token(force=True)
-        out["license"] = {"ok": True, **(_token.get("license") or {}), "warnings": _token.get("warnings")}
-        out["credentials"] = central_json("/v1/credentials/check", {"ctx": _ctx()})
+        get_token(force=True, settings=settings)
+        info = token_info(settings)
+        out["license"] = {"ok": True, **(info.get("license") or {}), "warnings": info.get("warnings")}
     except CentralError as e:
         out["license"] = {"ok": False, "code": e.code, "message": e.message}
+        return out
+    try:
+        check = central_json("/v1/credentials/check", {"ctx": {"credentials": credentials(settings)}}, settings=settings)
+        for k in ("llm", "embedding", "vector", "rerank"):
+            out[k] = check.get(k)
+        dim = int(settings["embedding"].get("dim") or 0)
+        got = (check.get("embedding") or {}).get("dim")
+        if got and dim and got != dim:
+            out["embedding"]["dim_mismatch"] = {"configured": dim, "actual": got}
+    except CentralError as e:
+        out["llm"] = {"ok": False, "error_code": e.code, "message": e.message}
     return out
+
+
+@app.post("/api/admin/settings/test")
+def test_settings(body: dict = Body(default={})):
+    return _run_check(merge_settings(load_settings(), body.get("settings") or {}))
+
+
+@app.put("/api/admin/settings")
+def save_settings(body: dict = Body(...)):
+    current = load_settings()
+    new = merge_settings(current, body.get("settings") or {})
+    if not new["embedding"].get("model") or int(new["embedding"].get("dim") or 0) <= 0:
+        raise HTTPException(400, "ต้องระบุโมเดล embedding และจำนวนมิติ (dim)")
+
+    # ล็อก embedding ต่อ KB — KB เดิมใช้โมเดลอื่นจะค้นไม่ได้ ต้องยืนยันก่อนเปลี่ยน
+    new_emb = embedding_lock_info(new)
+    affected = [kb["name"] for kb in db_all("kbs")
+                if kb["embedding"].get("model") != new_emb["model"] or int(kb["embedding"].get("dim") or 0) != new_emb["dim"]]
+    old_emb = embedding_lock_info(current)
+    if affected and (old_emb["model"], old_emb["dim"]) != (new_emb["model"], new_emb["dim"]) and not body.get("confirm_embedding_change"):
+        return JSONResponse(status_code=409, content={
+            "detail": "เปลี่ยน embedding แล้ว KB เดิมจะใช้ไม่ได้ ต้องสร้าง KB ใหม่และอัปโหลดใหม่",
+            "code": "embedding_change", "affected_kbs": affected,
+        })
+
+    _write_settings(new)
+    with _token_lock:
+        _tokens.clear()
+    return {"settings": public_settings(load_settings())}
+
+
+@app.post("/api/admin/check")
+def check_saved():
+    return _run_check(load_settings())
+
+
+@app.get("/api/health")
+def health():
+    return _run_check(load_settings())
+
+
+@app.get("/api/admin/status")
+def admin_status():
+    s = load_settings()
+    url, _ = _central(s)
+    central: dict = {"url": url}
+    try:
+        meta = httpx.get(f"{url}/v1/meta", timeout=8).json()
+        central.update({"ok": True, "api_version": meta.get("api_version")})
+    except Exception as e:
+        central.update({"ok": False, "message": f"ติดต่อ central ไม่ได้ ({type(e).__name__})"})
+    license_info: dict = {}
+    if central["ok"]:
+        try:
+            get_token(settings=s)
+            info = token_info(s)
+            license_info = {"ok": True, **(info.get("license") or {}), "warnings": info.get("warnings")}
+        except CentralError as e:
+            license_info = {"ok": False, "code": e.code, "message": e.message}
+    kbs = db_all("kbs")
+    return {
+        "central": central,
+        "license": license_info,
+        "models": {"llm": {"provider": s["llm"].get("provider"), "model": s["llm"].get("model")},
+                   "embedding": embedding_lock_info(s),
+                   "rerank": bool(s["rerank"].get("enabled") and s["rerank"].get("api_key"))},
+        "counts": {"kbs": len(kbs), "files": sum(len(kb.get("files", {})) for kb in kbs),
+                   "chunks": sum(f.get("chunks", 0) for kb in kbs for f in kb.get("files", {}).values()),
+                   "bots": len(db_all("bots")), "skills": len(db_all("skills"))},
+        "usage": get_usage(),
+    }
 
 
 @app.get("/api/usage")
 def usage():
-    return load_state()["usage"]
+    return get_usage()
 
 
 # ══════════════════════════════════════════════
-# Knowledge Bases  (รูปแบบเดียวกับ kb_router.py เดิม)
+# Knowledge Bases
 # ══════════════════════════════════════════════
 
 class KbCreateRequest(BaseModel):
@@ -287,14 +575,16 @@ def _kb_out(kb: dict, with_files: bool = False) -> dict:
         "collection_name": kb["collection_name"], "created_at": kb["created_at"],
         "file_count": len(files), "chunk_count": sum(f.get("chunks", 0) for f in files.values()),
         "embedding": kb["embedding"],
+        "embedding_matches": kb["embedding"].get("model") == load_settings()["embedding"].get("model"),
     }
     if with_files:
-        out["files"] = [{"name": n, "size": f.get("size", 0), "type": Path(n).suffix.lstrip(".")} for n, f in files.items()]
+        out["files"] = [{"name": n, "size": f.get("size", 0), "type": Path(n).suffix.lstrip("."),
+                         "chunks": f.get("chunks", 0), "uploaded_at": f.get("uploaded_at")} for n, f in files.items()]
     return out
 
 
-def _get_kb(state: dict, kb_id: str) -> dict:
-    kb = state["kbs"].get(kb_id)
+def _get_kb(kb_id: str) -> dict:
+    kb = db_get("kbs", kb_id)
     if not kb:
         raise HTTPException(404, "ไม่พบ Knowledge Base")
     return kb
@@ -302,45 +592,42 @@ def _get_kb(state: dict, kb_id: str) -> dict:
 
 @app.get("/api/kb")
 def list_kbs():
-    return {"knowledge_bases": [_kb_out(kb) for kb in load_state()["kbs"].values()]}
+    return {"knowledge_bases": [_kb_out(kb) for kb in db_all("kbs")]}
 
 
 @app.post("/api/kb")
 def create_kb(req: KbCreateRequest):
     if not req.name.strip():
         raise HTTPException(400, "กรุณาระบุชื่อ Knowledge Base")
-    emb = embedding_config()
+    emb = embedding_lock_info(load_settings())
     if not emb["model"] or emb["dim"] <= 0:
-        raise HTTPException(400, "ตั้ง EMBED_MODEL และ EMBED_DIM ใน .env ก่อนสร้าง Knowledge Base")
+        raise HTTPException(400, "ตั้งโมเดล embedding และ dim ในหน้าการเชื่อมต่อก่อนสร้าง Knowledge Base")
     kb_id = _new_id()
     kb = {
         "id": kb_id, "name": req.name.strip(), "description": req.description.strip(),
         "collection_name": f"kb_{kb_id}",
         # ล็อก embedding ตอนสร้าง — เปลี่ยนทีหลังไม่ได้ ต้องสร้าง KB ใหม่แล้ว ingest ใหม่
-        "embedding": {"provider": emb["provider"], "model": emb["model"], "dim": emb["dim"]},
-        "files": {}, "revision": 0, "created_at": _now(),
+        "embedding": emb, "files": {}, "revision": 0, "created_at": _now(),
     }
     central_json("/v1/kb/ensure", {"ctx": _ctx(), "kb": kb_payload(kb)})
-    state = load_state()
-    state["kbs"][kb_id] = kb
-    save_state(state)
+    db_put("kbs", kb_id, kb)
     return _kb_out(kb)
 
 
 @app.get("/api/kb/{kb_id}")
 def get_kb(kb_id: str):
-    return _kb_out(_get_kb(load_state(), kb_id), with_files=True)
+    return _kb_out(_get_kb(kb_id), with_files=True)
 
 
 @app.delete("/api/kb/{kb_id}")
 def delete_kb(kb_id: str):
-    kb = _get_kb(load_state(), kb_id)
+    kb = _get_kb(kb_id)
     central_json("/v1/kb/drop", {"ctx": _ctx(), "kb": kb_payload(kb)})
-    state = load_state()
-    state["kbs"].pop(kb_id, None)
-    for bot in state["bots"].values():
-        bot["kb_ids"] = [k for k in bot["kb_ids"] if k != kb_id]
-    save_state(state)
+    db_delete("kbs", kb_id)
+    for bot in db_all("bots"):
+        if kb_id in bot["kb_ids"]:
+            bot["kb_ids"] = [k for k in bot["kb_ids"] if k != kb_id]
+            db_put("bots", bot["id"], bot)
     folder = ORIGINALS_DIR / kb_id
     if folder.exists():
         for f in folder.iterdir():
@@ -350,11 +637,12 @@ def delete_kb(kb_id: str):
 
 
 def _ingest_via_central(kb: dict, filename: str, data: bytes) -> dict:
+    url, _ = _central()
     payload = {"ctx": _ctx(), "kb": kb_payload(kb), "source": {"filename": filename, "replace_existing": True}}
     for attempt in range(2):
         headers = {"Authorization": f"Bearer {get_token(force=attempt > 0)}"}
         try:
-            with httpx.stream("POST", f"{CENTRAL_URL}/v1/ingest/file", headers=headers, timeout=TIMEOUT,
+            with httpx.stream("POST", f"{url}/v1/ingest/file", headers=headers, timeout=TIMEOUT,
                               data={"payload": json.dumps(payload, ensure_ascii=False)},
                               files={"file": (filename, data, "application/octet-stream")}) as resp:
                 if resp.status_code == 401 and attempt == 0:
@@ -370,9 +658,7 @@ def _ingest_via_central(kb: dict, filename: str, data: bytes) -> dict:
                         return event
                     if event.get("type") == "error":
                         err = event.get("error") or {}
-                        state = load_state()
-                        add_usage(state, event.get("usage"))
-                        save_state(state)
+                        add_usage(event.get("usage"))
                         raise CentralError(502, err.get("code", "ingest_failed"), err.get("message", "ingest ไม่สำเร็จ"))
         except httpx.HTTPError as e:
             raise CentralError(502, "central_unreachable", f"ติดต่อ central ไม่ได้ ({type(e).__name__})")
@@ -381,14 +667,15 @@ def _ingest_via_central(kb: dict, filename: str, data: bytes) -> dict:
 
 @app.post("/api/kb/{kb_id}/upload")
 def upload_to_kb(kb_id: str, file: UploadFile = File(...)):
-    kb = _get_kb(load_state(), kb_id)
+    kb = _get_kb(kb_id)
     filename = _safe_filename(file.filename)
     suffix = Path(filename).suffix.lower()
     if suffix not in KB_ALLOWED:
         raise HTTPException(400, f"รองรับเฉพาะ {', '.join(KB_ALLOWED)} เท่านั้น")
-    if kb["embedding"]["model"] != embedding_config()["model"]:
-        raise HTTPException(409, f"Knowledge Base นี้สร้างด้วย embedding '{kb['embedding']['model']}' แต่ .env ตอนนี้เป็น "
-                                 f"'{embedding_config()['model']}' — ห้ามเปลี่ยน embedding ของ KB เดิม")
+    current_model = load_settings()["embedding"].get("model")
+    if kb["embedding"].get("model") != current_model:
+        raise HTTPException(409, f"Knowledge Base นี้สร้างด้วย embedding '{kb['embedding'].get('model')}' แต่ตอนนี้ตั้งเป็น "
+                                 f"'{current_model}' — สร้าง Knowledge Base ใหม่เพื่อใช้ embedding ตัวใหม่")
     data = file.file.read()
 
     # เก็บต้นฉบับไว้ที่ node (central ไม่เก็บ) เผื่อวันที่ต้อง re-index
@@ -398,14 +685,14 @@ def upload_to_kb(kb_id: str, file: UploadFile = File(...)):
 
     result = _ingest_via_central(kb, filename, data)
 
-    state = load_state()
-    kb = state["kbs"].get(kb_id)
-    if kb:
-        kb["files"][filename] = {"size": len(data), "chunks": result.get("chunks", 0),
-                                 "chunk_types": result.get("chunk_types", {}), "uploaded_at": _now()}
-        kb["revision"] = kb.get("revision", 0) + 1
-    add_usage(state, result.get("usage"))
-    save_state(state)
+    with _db_lock:
+        kb = db_get("kbs", kb_id)
+        if kb:
+            kb["files"][filename] = {"size": len(data), "chunks": result.get("chunks", 0),
+                                     "chunk_types": result.get("chunk_types", {}), "uploaded_at": _now()}
+            kb["revision"] = kb.get("revision", 0) + 1
+            db_put("kbs", kb_id, kb)
+    add_usage(result.get("usage"))
     return {
         "message": f"อัปโหลด '{filename}' เข้า '{kb['name'] if kb else kb_id}' สำเร็จ",
         "chunks": result.get("chunks", 0),
@@ -417,24 +704,24 @@ def upload_to_kb(kb_id: str, file: UploadFile = File(...)):
 
 @app.delete("/api/kb/{kb_id}/files/{filename}")
 def delete_kb_file(kb_id: str, filename: str):
-    kb = _get_kb(load_state(), kb_id)
+    kb = _get_kb(kb_id)
     filename = _safe_filename(filename)
     if filename not in kb.get("files", {}):
         raise HTTPException(404, "ไม่พบไฟล์")
     central_json("/v1/kb/delete-source", {"ctx": _ctx(), "kb": kb_payload(kb), "source": filename})
-    state = load_state()
-    kb = state["kbs"].get(kb_id)
-    if kb:
-        kb["files"].pop(filename, None)
-        kb["revision"] = kb.get("revision", 0) + 1
-    save_state(state)
+    with _db_lock:
+        kb = db_get("kbs", kb_id)
+        if kb:
+            kb["files"].pop(filename, None)
+            kb["revision"] = kb.get("revision", 0) + 1
+            db_put("kbs", kb_id, kb)
     (ORIGINALS_DIR / kb_id / filename).unlink(missing_ok=True)
     return {"message": f"ลบ '{filename}' สำเร็จ"}
 
 
 @app.get("/api/kb/{kb_id}/files/{filename}/chunks")
 def get_kb_file_chunks(kb_id: str, filename: str):
-    kb = _get_kb(load_state(), kb_id)
+    kb = _get_kb(kb_id)
     filename = _safe_filename(filename)
     result = central_json("/v1/kb/chunks", {"ctx": _ctx(), "kb": kb_payload(kb), "source": filename})
     chunks = [{"id": c["id"], "text": c["text"], "length": len(c["text"]), "metadata": c["metadata"]}
@@ -455,7 +742,7 @@ def get_kb_file_chunks(kb_id: str, filename: str):
 
 
 # ══════════════════════════════════════════════
-# Skill Sets  (รูปแบบเดียวกับ skill_router.py เดิม)
+# Skill Sets
 # ══════════════════════════════════════════════
 
 class SkillSetCreateRequest(BaseModel):
@@ -489,44 +776,43 @@ def _skill_out(s: dict, detail: bool = False) -> dict:
     return out
 
 
-def _get_skill(state: dict, skill_id: str) -> dict:
-    s = state["skills"].get(skill_id)
+def _get_skill(skill_id: str) -> dict:
+    s = db_get("skills", skill_id)
     if not s:
-        raise HTTPException(404, "ไม่พบ Skill Set")
+        raise HTTPException(404, "ไม่พบชุดสูตร")
     return s
 
 
 @app.get("/api/skills")
 def list_skill_sets():
-    return {"skill_sets": [_skill_out(s) for s in load_state()["skills"].values()]}
+    return {"skill_sets": [_skill_out(s) for s in db_all("skills")]}
 
 
 @app.post("/api/skills")
 def create_skill_set(req: SkillSetCreateRequest):
     if not req.name.strip():
-        raise HTTPException(400, "กรุณาระบุชื่อ Skill Set")
-    state = load_state()
+        raise HTTPException(400, "กรุณาระบุชื่อชุดสูตร")
     sid = _new_id()
-    state["skills"][sid] = {"id": sid, "name": req.name.strip(), "description": req.description.strip(),
-                            "files": {}, "revision": 0, "created_at": _now()}
-    save_state(state)
-    return _skill_out(state["skills"][sid])
+    s = {"id": sid, "name": req.name.strip(), "description": req.description.strip(),
+         "files": {}, "revision": 0, "created_at": _now()}
+    db_put("skills", sid, s)
+    return _skill_out(s)
 
 
 @app.get("/api/skills/{skill_id}")
 def get_skill_set(skill_id: str):
-    return _skill_out(_get_skill(load_state(), skill_id), detail=True)
+    return _skill_out(_get_skill(skill_id), detail=True)
 
 
 @app.delete("/api/skills/{skill_id}")
 def delete_skill_set(skill_id: str):
-    state = load_state()
-    _get_skill(state, skill_id)
-    state["skills"].pop(skill_id)
-    for bot in state["bots"].values():
-        bot["skill_set_ids"] = [s for s in bot["skill_set_ids"] if s != skill_id]
-    save_state(state)
-    return {"message": "ลบ Skill Set สำเร็จ"}
+    _get_skill(skill_id)
+    db_delete("skills", skill_id)
+    for bot in db_all("bots"):
+        if skill_id in bot["skill_set_ids"]:
+            bot["skill_set_ids"] = [s for s in bot["skill_set_ids"] if s != skill_id]
+            db_put("bots", bot["id"], bot)
+    return {"message": "ลบชุดสูตรสำเร็จ"}
 
 
 @app.post("/api/skills/{skill_id}/upload")
@@ -535,27 +821,27 @@ def upload_skill_file(skill_id: str, file: UploadFile = File(...)):
     if not filename.lower().endswith(".md"):
         raise HTTPException(400, "รองรับเฉพาะไฟล์ .md เท่านั้น")
     content = file.file.read().decode("utf-8")
-    state = load_state()
-    skill = _get_skill(state, skill_id)
-    skill["files"][filename] = content
-    skill["revision"] = skill.get("revision", 0) + 1
-    save_state(state)
+    with _db_lock:
+        skill = _get_skill(skill_id)
+        skill["files"][filename] = content
+        skill["revision"] = skill.get("revision", 0) + 1
+        db_put("skills", skill_id, skill)
     return {"message": f"อัปโหลด '{filename}' สำเร็จ", "skills_parsed": len(_preview_skills(content)), "filename": filename}
 
 
 @app.delete("/api/skills/{skill_id}/files/{filename}")
 def delete_skill_file(skill_id: str, filename: str):
-    state = load_state()
-    skill = _get_skill(state, skill_id)
-    if skill["files"].pop(_safe_filename(filename), None) is None:
-        raise HTTPException(404, "ไม่พบไฟล์")
-    skill["revision"] = skill.get("revision", 0) + 1
-    save_state(state)
+    with _db_lock:
+        skill = _get_skill(skill_id)
+        if skill["files"].pop(_safe_filename(filename), None) is None:
+            raise HTTPException(404, "ไม่พบไฟล์")
+        skill["revision"] = skill.get("revision", 0) + 1
+        db_put("skills", skill_id, skill)
     return {"message": f"ลบ '{filename}' สำเร็จ"}
 
 
 # ══════════════════════════════════════════════
-# Chatbots  (รูปแบบเดียวกับ bot_router.py เดิม)
+# Chatbots
 # ══════════════════════════════════════════════
 
 class BotCreateRequest(BaseModel):
@@ -580,21 +866,25 @@ class BotUpdateRequest(BaseModel):
     quick_chat_tags: list[str] | None = None
 
 
-def _enrich(state: dict, bot: dict) -> dict:
+def _enrich(bot: dict) -> dict:
+    kbs = {kb["id"]: kb for kb in db_all("kbs")}
+    skills = {s["id"]: s for s in db_all("skills")}
     return {
         **bot,
-        "kb_names": [state["kbs"][k]["name"] for k in bot["kb_ids"] if k in state["kbs"]],
-        "skill_set_names": [state["skills"][s]["name"] for s in bot["skill_set_ids"] if s in state["skills"]],
+        "kb_names": [kbs[k]["name"] for k in bot["kb_ids"] if k in kbs],
+        "skill_set_names": [skills[s]["name"] for s in bot["skill_set_ids"] if s in skills],
     }
 
 
-def _validate_refs(state: dict, kb_ids: list[str] | None, skill_ids: list[str] | None, tags: list[str] | None):
+def _validate_refs(kb_ids: list[str] | None, skill_ids: list[str] | None, tags: list[str] | None):
+    kbs = {kb["id"] for kb in db_all("kbs")}
+    skills = {s["id"] for s in db_all("skills")}
     for k in kb_ids or []:
-        if k not in state["kbs"]:
+        if k not in kbs:
             raise HTTPException(400, f"ไม่พบ Knowledge Base '{k}'")
     for s in skill_ids or []:
-        if s not in state["skills"]:
-            raise HTTPException(400, f"ไม่พบ Skill Set '{s}'")
+        if s not in skills:
+            raise HTTPException(400, f"ไม่พบชุดสูตร '{s}'")
     if tags is not None:
         if len(tags) > QUICK_CHAT_MAX_TAGS:
             raise HTTPException(400, f"Quick Chat ได้สูงสุด {QUICK_CHAT_MAX_TAGS} รายการ")
@@ -605,8 +895,8 @@ def _validate_refs(state: dict, kb_ids: list[str] | None, skill_ids: list[str] |
                 raise HTTPException(400, f"Quick Chat แต่ละรายการยาวได้ไม่เกิน {QUICK_CHAT_MAX_TAG_LENGTH} ตัวอักษร")
 
 
-def _get_bot(state: dict, bot_id: str) -> dict:
-    bot = state["bots"].get(bot_id)
+def _get_bot(bot_id: str) -> dict:
+    bot = db_get("bots", bot_id)
     if not bot:
         raise HTTPException(404, "ไม่พบ Chatbot")
     return bot
@@ -614,70 +904,67 @@ def _get_bot(state: dict, bot_id: str) -> dict:
 
 @app.get("/api/bots")
 def list_bots():
-    state = load_state()
-    return {"bots": [_enrich(state, b) for b in state["bots"].values()]}
+    return {"bots": [_enrich(b) for b in db_all("bots")]}
 
 
 @app.post("/api/bots")
 def create_bot(req: BotCreateRequest):
     if not req.name.strip():
         raise HTTPException(400, "กรุณาระบุชื่อ Chatbot")
-    state = load_state()
-    _validate_refs(state, req.kb_ids, req.skill_set_ids, req.quick_chat_tags)
+    _validate_refs(req.kb_ids, req.skill_set_ids, req.quick_chat_tags)
     bid = _new_id()
-    state["bots"][bid] = {
+    bot = {
         "id": bid, "name": req.name.strip(), "description": req.description.strip(),
         "kb_ids": req.kb_ids, "skill_set_ids": req.skill_set_ids,
         "system_prompt": req.system_prompt or DEFAULT_SYSTEM_PROMPT, "use_rerank": req.use_rerank,
         "quick_chat_enabled": req.quick_chat_enabled, "quick_chat_tags": [t.strip() for t in req.quick_chat_tags],
         "created_at": _now(), "last_chatted_at": None,
     }
-    save_state(state)
-    return _enrich(state, state["bots"][bid])
+    db_put("bots", bid, bot)
+    return _enrich(bot)
 
 
 @app.get("/api/bots/{bot_id}")
 def get_bot(bot_id: str):
-    state = load_state()
-    return _enrich(state, _get_bot(state, bot_id))
+    return _enrich(_get_bot(bot_id))
 
 
 @app.put("/api/bots/{bot_id}")
 def update_bot(bot_id: str, req: BotUpdateRequest):
-    state = load_state()
-    bot = _get_bot(state, bot_id)
-    _validate_refs(state, req.kb_ids, req.skill_set_ids, req.quick_chat_tags)
-    for field, value in req.model_dump(exclude_none=True).items():
-        bot[field] = [t.strip() for t in value] if field == "quick_chat_tags" else value
-    state["caches"].pop(bot_id, None)
-    save_state(state)
-    return _enrich(state, bot)
+    _validate_refs(req.kb_ids, req.skill_set_ids, req.quick_chat_tags)
+    with _db_lock:
+        bot = _get_bot(bot_id)
+        for field, value in req.model_dump(exclude_none=True).items():
+            bot[field] = [t.strip() for t in value] if field == "quick_chat_tags" else value
+        db_put("bots", bot_id, bot)
+    db_delete("caches", bot_id)
+    return _enrich(bot)
 
 
 @app.delete("/api/bots/{bot_id}")
 def delete_bot(bot_id: str):
-    state = load_state()
-    _get_bot(state, bot_id)
-    state["bots"].pop(bot_id)
-    state["caches"].pop(bot_id, None)
-    save_state(state)
+    _get_bot(bot_id)
+    db_delete("bots", bot_id)
+    db_delete("caches", bot_id)
     return {"message": "ลบ Chatbot สำเร็จ"}
 
 
-def _cache_stamp(state: dict, bot: dict) -> dict:
+def _cache_stamp(bot: dict) -> dict:
+    kbs = {kb["id"]: kb for kb in db_all("kbs")}
+    skills = {s["id"]: s for s in db_all("skills")}
     return {
-        "kbs": {k: state["kbs"][k].get("revision", 0) for k in bot["kb_ids"] if k in state["kbs"]},
-        "skills": {s: state["skills"][s].get("revision", 0) for s in bot["skill_set_ids"] if s in state["skills"]},
-        "embed_model": embedding_config()["model"],
+        "kbs": {k: kbs[k].get("revision", 0) for k in bot["kb_ids"] if k in kbs},
+        "skills": {s: skills[s].get("revision", 0) for s in bot["skill_set_ids"] if s in skills},
+        "embed_model": load_settings()["embedding"].get("model"),
     }
 
 
-def _chat_payload(state: dict, bot: dict, message: str) -> dict:
-    kbs = [kb_payload(state["kbs"][k]) for k in bot["kb_ids"] if k in state["kbs"]]
+def _chat_payload(bot: dict, message: str, stamp: dict) -> dict:
+    kbs = [kb_payload(kb) for k in bot["kb_ids"] if (kb := db_get("kbs", k))]
     skills = [{"id": s["id"], "name": s["name"], "files": [{"name": n, "content": c} for n, c in s["files"].items()]}
-              for s in (state["skills"].get(i) for i in bot["skill_set_ids"]) if s]
-    cached = state["caches"].get(bot["id"]) or {}
-    cache = cached.get("data") if cached.get("stamp") == _cache_stamp(state, bot) else {}
+              for i in bot["skill_set_ids"] if (s := db_get("skills", i))]
+    cached = db_get("caches", bot["id"]) or {}
+    cache = cached.get("data") if cached.get("stamp") == stamp else {}
     return {
         "ctx": {"credentials": credentials(), "cache": cache or {}},
         "bot": {"system_prompt": bot.get("system_prompt", ""), "use_rerank": bot.get("use_rerank", False),
@@ -691,22 +978,21 @@ def _save_export(export: dict) -> dict:
     eid = _new_id()
     path = EXPORTS_DIR / f"{eid}.{export['format']}"
     path.write_bytes(base64.b64decode(export["content_base64"]))
-    state = load_state()
-    state["exports"][eid] = {"filename": export["filename"], "mime": export.get("mime"), "path": path.name, "created_at": _now()}
-    save_state(state)
+    db_put("exports", eid, {"filename": export["filename"], "mime": export.get("mime"), "path": path.name, "created_at": _now()})
     return {"id": eid, "format": export["format"], "title": export.get("title"), "filename": export["filename"],
             "download_url": f"/api/exports/{eid}/download"}
 
 
 def _after_done(bot_id: str, stamp: dict, event: dict) -> dict:
     """เก็บ cache/usage ที่ central ส่งกลับ แล้วคืน event ที่ส่งต่อให้หน้าเว็บ (ไม่มี cache)"""
-    st = load_state()
     if "cache" in event:
-        st["caches"][bot_id] = {"stamp": stamp, "data": event.pop("cache")}
-    add_usage(st, event.get("usage"))
-    if bot_id in st["bots"]:
-        st["bots"][bot_id]["last_chatted_at"] = _now()
-    save_state(st)
+        db_put("caches", bot_id, {"stamp": stamp, "data": event.pop("cache")})
+    add_usage(event.get("usage"))
+    with _db_lock:
+        bot = db_get("bots", bot_id)
+        if bot:
+            bot["last_chatted_at"] = _now()
+            db_put("bots", bot_id, bot)
     if event.get("export"):
         event["export"] = _save_export(event["export"])
     return event
@@ -720,11 +1006,11 @@ async def _read_file_part(file: UploadFile | None):
 
 @app.post("/api/bots/{bot_id}/chat/stream")
 async def chat_stream(bot_id: str, message: str = Form(...), file: UploadFile | None = File(None)):
-    state = load_state()
-    bot = _get_bot(state, bot_id)
-    payload = _chat_payload(state, bot, message)
-    stamp = _cache_stamp(state, bot)
+    bot = _get_bot(bot_id)
+    stamp = _cache_stamp(bot)
+    payload = _chat_payload(bot, message, stamp)
     file_part = await _read_file_part(file)
+    url, _ = _central()
 
     def sse(event: dict) -> str:
         return f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
@@ -734,7 +1020,7 @@ async def chat_stream(bot_id: str, message: str = Form(...), file: UploadFile | 
             async with httpx.AsyncClient(timeout=TIMEOUT) as client:
                 for attempt in range(2):
                     token = get_token(force=attempt > 0)
-                    async with client.stream("POST", f"{CENTRAL_URL}/v1/chat/stream",
+                    async with client.stream("POST", f"{url}/v1/chat/stream",
                                              headers={"Authorization": f"Bearer {token}"},
                                              data={"payload": json.dumps(payload, ensure_ascii=False)},
                                              files=file_part) as resp:
@@ -763,14 +1049,14 @@ async def chat_stream(bot_id: str, message: str = Form(...), file: UploadFile | 
 
 @app.post("/api/bots/{bot_id}/chat")
 async def chat(bot_id: str, message: str = Form(...), file: UploadFile | None = File(None)):
-    state = load_state()
-    bot = _get_bot(state, bot_id)
-    payload = _chat_payload(state, bot, message)
-    stamp = _cache_stamp(state, bot)
+    bot = _get_bot(bot_id)
+    stamp = _cache_stamp(bot)
+    payload = _chat_payload(bot, message, stamp)
     file_part = await _read_file_part(file)
+    url, _ = _central()
     async with httpx.AsyncClient(timeout=TIMEOUT) as client:
         for attempt in range(2):
-            resp = await client.post(f"{CENTRAL_URL}/v1/chat", headers={"Authorization": f"Bearer {get_token(force=attempt > 0)}"},
+            resp = await client.post(f"{url}/v1/chat", headers={"Authorization": f"Bearer {get_token(force=attempt > 0)}"},
                                      data={"payload": json.dumps(payload, ensure_ascii=False)}, files=file_part)
             if resp.status_code == 401 and attempt == 0:
                 continue
@@ -782,7 +1068,7 @@ async def chat(bot_id: str, message: str = Form(...), file: UploadFile | None = 
 
 @app.get("/api/exports/{export_id}/download")
 def download_export(export_id: str):
-    rec = load_state()["exports"].get(export_id)
+    rec = db_get("exports", export_id)
     if not rec:
         raise HTTPException(404, "ไม่พบไฟล์")
     return FileResponse(EXPORTS_DIR / rec["path"], filename=rec["filename"], media_type=rec.get("mime") or "application/octet-stream")

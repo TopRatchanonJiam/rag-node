@@ -1,14 +1,15 @@
 # rag-node (เครื่องลูกค้า)
 
-node เป็นตัวบาง หน้าที่มีดังนี้
+node เป็นตัวบาง ส่งงานทั้งหมดไปให้ central ประมวลผล และมีหน้าเว็บ 2 ส่วน
 
-- ถือ key ของลูกค้าใน `.env`
-- เก็บสถานะ (KB, ชุดสูตร, บอท, cache, usage) เป็นไฟล์ JSON
-- ส่งงานทั้งหมดไปให้ central ประมวลผล
-- เสิร์ฟหน้าเว็บหมวด **AI Chatbot** (Chat / Chatbots / Knowledge Bases / Skills) ซึ่งเป็น UI เดิมจาก langchain-demo
+| หน้า | สำหรับ | มีอะไร |
+|---|---|---|
+| `/` | ผู้ใช้งาน | หน้าแชท เลือกบอทแล้วถามได้เลย |
+| `/admin` | ผู้ดูแล | **จัดการความรู้**: คลังความรู้ (อัปโหลด/ดู chunk), ชุดสูตร, Chatbots · **ระบบ**: การเชื่อมต่อ AI (provider/key/โมเดล), ภาพรวมสถานะและการใช้งาน |
 
-- หน้าเว็บ: `frontend/` (Next.js, build เป็นไฟล์ static แล้วให้ node เสิร์ฟบน origin เดียวกับ API)
-- API: path และรูปแบบเดียวกับ backend เดิม (`/api/kb`, `/api/skills`, `/api/bots`)
+- การตั้งค่าและข้อมูลทั้งหมดอยู่ใน `data/node.db` (SQLite) โดย key ถูกเข้ารหัส และแก้จากหน้า `/admin/settings` แล้วมีผลทันที
+- `.env` ใช้แค่ค่าเริ่มต้นตอนเปิดครั้งแรก (รุ่นก่อนที่ใช้ `state.json` จะถูกย้ายเข้า SQLite ให้อัตโนมัติ)
+- หน้าเว็บอยู่ใน `frontend/` (Next.js, build เป็นไฟล์ static แล้วให้ node เสิร์ฟบน origin เดียวกับ API)
 - สัญญาที่ใช้คุยกับ central: [docs/CENTRAL_API_CONTRACT.md](docs/CENTRAL_API_CONTRACT.md)
 
 node เป็นฝ่ายเรียกออกไปหา central เพียงทางเดียว จึงรันบนเครื่อง local ได้ ไม่ต้องเปิดพอร์ตหรือมี IP สาธารณะ
@@ -69,7 +70,9 @@ python -m venv .venv
 
 ## ข้อควรรู้
 
-- **Embedding ล็อกต่อ KB** ต้องตั้ง `EMBED_MODEL` และ `EMBED_DIM` ก่อนสร้าง KB แรก ถ้าเปลี่ยนทีหลัง KB เดิมจะใช้ไม่ได้
+- **สำรอง `data/node.db` คู่กับ `data/secret.key` เสมอ** ถ้า `secret.key` หาย key ทั้งหมดใน Settings จะอ่านไม่ได้ ต้องกรอกใหม่ (ข้อมูล KB และบอทไม่หาย)
+- **Embedding ล็อกต่อ KB** ระบบจะเตือนและให้ยืนยันก่อนเปลี่ยน เพราะ KB เดิมจะค้นไม่ได้ ต้องสร้างใหม่และอัปโหลดใหม่
+- **Ollama** เลือก provider "Ollama" แล้วใส่ `http://<ip>:11434` ไม่ต้องใส่ `/v1` และไม่ต้องใช้ key
 - **ไฟล์ต้นฉบับ** อยู่ที่ `data/originals/` ส่วนไฟล์ export อยู่ที่ `data/exports/`
 - **ข้อมูลไม่ผูกกับ central ตัวใดตัวหนึ่ง** central ไม่เก็บอะไร เปลี่ยน `CENTRAL_URL` ไปเครื่องอื่นได้ KB และบอทเดิมยังใช้ได้ ตราบใดที่ license กับ Qdrant ยังเป็นชุดเดิม
 - **ยังไม่มีในหน้าเว็บนี้:** Retrieval Test และ KB Realtime (connector) เพราะ central ยังไม่มี endpoint รองรับ

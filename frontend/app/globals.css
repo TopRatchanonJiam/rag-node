@@ -2,16 +2,13 @@
 @tailwind components;
 @tailwind utilities;
 
-html {
-  scroll-behavior: smooth;
+html,
+body {
+  height: 100%;
 }
 
 body {
-  @apply bg-slate-50 text-slate-800 antialiased;
-  /* วิญเญ็ตจางๆ บนสุดของหน้า ให้พื้นหลังมีมิติมากกว่าสีเรียบล้วน — จางมากจนแทบไม่รู้ตัว ไม่ใช่การ
-     เพิ่มสี แค่ไล่ความเข้ม-อ่อนของสีเทาเดิม (ตรงตามที่ตกลงไว้: ขาว-ดำล้วน แค่เพิ่มมิติ) */
-  background-image: radial-gradient(ellipse 80% 45% at 50% -8%, rgb(0 0 0 / 0.035), transparent 70%);
-  background-repeat: no-repeat;
+  @apply bg-accent-50 text-accent-900 antialiased;
 }
 
 ::selection {
@@ -22,35 +19,13 @@ body {
   width: 6px;
 }
 .scrollbar-thin::-webkit-scrollbar-thumb {
-  @apply bg-slate-300 rounded-full;
+  @apply rounded-full bg-accent-300;
 }
 
-/* เอฟเฟกต์ fade-up ใช้ทั้งตอนโหลดหน้าแรก (Hero, apply ตรงๆ) และตอน scroll เข้า viewport
-   (ผ่าน components/ui/Reveal.tsx) — รวมไว้ที่เดียวกันเพื่อให้จังหวะ/style ตรงกันทั้งเว็บ */
-@keyframes fade-up {
-  from {
-    opacity: 0;
-    transform: translateY(14px);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0);
-  }
+/* ช่องกรอกมาตรฐานของทั้งระบบ */
+.field {
+  @apply w-full rounded-lg border border-accent-200 bg-white px-3 py-2 text-sm text-accent-900 placeholder:text-accent-400 focus:border-brand-500 focus:outline-none focus:ring-2 focus:ring-brand-500/20 disabled:bg-accent-50 disabled:text-accent-400;
 }
-
-.reveal {
-  opacity: 0;
-}
-
-.reveal-visible {
-  animation: fade-up 0.6s cubic-bezier(0.16, 1, 0.3, 1) both;
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .reveal {
-    opacity: 1;
-  }
-  .reveal-visible {
-    animation: none;
-  }
+.field-label {
+  @apply mb-1 block text-xs font-medium text-accent-600;
 }

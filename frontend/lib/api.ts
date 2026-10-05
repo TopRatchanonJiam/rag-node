@@ -1,4 +1,4 @@
-import type { Chatbot, KnowledgeBase, SkillSet } from "./types";
+import type { AdminStatus, Chatbot, CheckResult, KnowledgeBase, NodeSettings, SkillSet } from "./types";
 
 // หน้าเว็บถูกเสิร์ฟจาก node ตัวเดียวกับ API (origin เดียวกัน) — ใช้ path แบบ relative
 export const API_BASE = (process.env.NEXT_PUBLIC_API_URL || "").replace(/\/$/, "");
@@ -188,4 +188,47 @@ export async function streamChatWithBot(
       else if (event.type === "done") handlers.onDone({ used_skill: event.used_skill, export: event.export });
     }
   }
+}
+
+// ── หลังบ้าน: การเชื่อมต่อ / สถานะ ──────────────────────
+
+// ค่าที่ส่งไปบันทึก: ช่อง key — ไม่ส่ง/ว่าง = ใช้ค่าเดิม, null = ลบ
+export type SettingsInput = Record<string, Record<string, string | number | boolean | null | undefined>>;
+
+export async function getSettings(): Promise<{ settings: NodeSettings; kb_count: number }> {
+  return request("/api/admin/settings");
+}
+
+export async function testSettings(settings: SettingsInput): Promise<CheckResult> {
+  return request("/api/admin/settings/test", { method: "POST", body: JSON.stringify({ settings }) });
+}
+
+export class EmbeddingChangeError extends Error {
+  affected: string[];
+  constructor(message: string, affected: string[]) {
+    super(message);
+    this.affected = affected;
+  }
+}
+
+export async function saveSettings(settings: SettingsInput, confirmEmbeddingChange = false): Promise<{ settings: NodeSettings }> {
+  const res = await fetch(`${API_BASE}/api/admin/settings`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ settings, confirm_embedding_change: confirmEmbeddingChange }),
+  });
+  const body = await res.json().catch(() => ({}));
+  if (res.status === 409 && body?.code === "embedding_change") {
+    throw new EmbeddingChangeError(body.detail, body.affected_kbs ?? []);
+  }
+  if (!res.ok) throw new Error(body?.detail || `Request failed (${res.status})`);
+  return body;
+}
+
+export async function getAdminStatus(): Promise<AdminStatus> {
+  return request("/api/admin/status");
+}
+
+export async function runFullCheck(): Promise<CheckResult> {
+  return request("/api/admin/check", { method: "POST" });
 }

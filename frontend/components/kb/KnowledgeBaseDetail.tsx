@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { Eye, FileText, Loader2, Trash2 } from "lucide-react";
+import { AlertTriangle, Eye, FileText, Loader2, Trash2 } from "lucide-react";
 import { DocDropzone } from "./DocDropzone";
 import { ChunkViewerModal } from "./ChunkViewerModal";
 import { Button } from "@/components/ui/Button";
@@ -37,7 +37,7 @@ export function KnowledgeBaseDetail({
           <h2 className="text-xl font-semibold text-slate-900">{kb.name}</h2>
           {kb.description && <p className="mt-1 text-sm text-slate-500">{kb.description}</p>}
           <p className="mt-2 text-xs text-slate-400">
-            {kb.file_count} ไฟล์ · {kb.chunk_count} chunks · collection: {kb.collection_name}
+            {kb.file_count} ไฟล์ · {kb.chunk_count} chunks · embedding: {kb.embedding?.model ?? "—"} ({kb.embedding?.dim ?? "?"} มิติ)
           </p>
         </div>
         <Button variant="ghost" onClick={onDeleteKb} className="text-rose-600 hover:bg-rose-50">
@@ -45,7 +45,15 @@ export function KnowledgeBaseDetail({
         </Button>
       </div>
 
-      <DocDropzone onFileSelected={onUpload} disabled={uploading} />
+      {kb.embedding_matches === false && (
+        <p className="flex items-start gap-2 rounded-lg bg-amber-50 px-3 py-2.5 text-xs text-amber-800 ring-1 ring-inset ring-amber-200">
+          <AlertTriangle size={14} className="mt-px shrink-0" />
+          KB นี้สร้างด้วย embedding คนละตัวกับที่ตั้งไว้ตอนนี้ จึงค้นหาและอัปโหลดเพิ่มไม่ได้ — สร้าง KB ใหม่แล้วอัปโหลดเอกสารใหม่
+          หรือเปลี่ยน embedding กลับในหน้าการเชื่อมต่อ AI
+        </p>
+      )}
+
+      <DocDropzone onFileSelected={onUpload} disabled={uploading || kb.embedding_matches === false} />
       {uploading && (
         <p className="flex items-center gap-2 text-sm text-slate-500">
           <Loader2 size={14} className="animate-spin" /> กำลังอัปโหลดและสร้าง chunk...
@@ -63,7 +71,10 @@ export function KnowledgeBaseDetail({
                 <div className="flex min-w-0 items-center gap-2">
                   <FileText size={15} className="shrink-0 text-slate-400" />
                   <span className="truncate">{f.name}</span>
-                  <span className="shrink-0 text-xs text-slate-400">{formatSize(f.size)}</span>
+                  <span className="shrink-0 text-xs text-slate-400">
+                    {formatSize(f.size)}
+                    {typeof f.chunks === "number" ? ` · ${f.chunks} chunks` : ""}
+                  </span>
                 </div>
                 <div className="flex shrink-0 items-center gap-1">
                   <button

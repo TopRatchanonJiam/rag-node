@@ -2,9 +2,8 @@
 
 import { useEffect, useState } from "react";
 import { Loader2, Plus } from "lucide-react";
-import { ChatSubNav } from "@/components/chat/ChatSubNav";
 import { Card } from "@/components/ui/Card";
-import { SectionHeading } from "@/components/ui/SectionHeading";
+import { ErrorNote, PageHeader } from "@/components/admin/AdminShell";
 import { Modal } from "@/components/ui/Modal";
 import { BotForm, type BotFormValues } from "@/components/bots/BotForm";
 import { BotCard } from "@/components/bots/BotCard";
@@ -69,13 +68,10 @@ export default function BotsPage() {
   }
 
   return (
-    <div className="flex flex-col gap-6">
-      <div>
-        <SectionHeading eyebrow="Chatbot System" title="Chatbots" />
-        <ChatSubNav />
-      </div>
+    <div className="flex flex-col gap-5">
+      <PageHeader title="Chatbots" description="กำหนดว่าแต่ละบอทใช้ KB/ชุดสูตรไหน บุคลิกการตอบ และคำถามลัด" />
 
-      {error && <p className="rounded-lg bg-rose-50 px-3 py-2 text-sm text-rose-600">{error}</p>}
+      <ErrorNote message={error} />
 
       <button
         type="button"
@@ -90,7 +86,7 @@ export default function BotsPage() {
           <Loader2 size={16} className="animate-spin" /> กำลังโหลด...
         </div>
       ) : bots.length === 0 ? (
-        <Card>
+        <Card hover={false}>
           <p className="text-sm text-slate-400">ยังไม่มี Chatbot — สร้างตัวแรกโดยเลือก Knowledge Base ที่จะใช้ตอบคำถาม</p>
         </Card>
       ) : (

@@ -2,9 +2,8 @@
 
 import { useEffect, useState } from "react";
 import { Loader2 } from "lucide-react";
-import { ChatSubNav } from "@/components/chat/ChatSubNav";
 import { Card } from "@/components/ui/Card";
-import { SectionHeading } from "@/components/ui/SectionHeading";
+import { ErrorNote, PageHeader } from "@/components/admin/AdminShell";
 import { Button } from "@/components/ui/Button";
 import { Modal } from "@/components/ui/Modal";
 import { KnowledgeBaseList } from "@/components/kb/KnowledgeBaseList";
@@ -128,13 +127,10 @@ export default function KnowledgeBasesPage() {
   }
 
   return (
-    <div className="flex flex-col gap-6">
-      <div>
-        <SectionHeading eyebrow="Chatbot System" title="Knowledge Bases" />
-        <ChatSubNav />
-      </div>
+    <div className="flex flex-col gap-5">
+      <PageHeader title="คลังความรู้ (Knowledge Bases)" description="อัปโหลดเอกสารให้บอทใช้ตอบ — รองรับ PDF, Word, Excel, CSV และข้อความ แต่ละ KB ผูกกับ embedding ที่ใช้ตอนสร้าง" />
 
-      {error && <p className="rounded-lg bg-rose-50 px-3 py-2 text-sm text-rose-600">{error}</p>}
+      <ErrorNote message={error} />
 
       {loadingList ? (
         <div className="flex items-center gap-2 text-sm text-slate-400">
@@ -142,7 +138,7 @@ export default function KnowledgeBasesPage() {
         </div>
       ) : (
         <div className="grid gap-6 lg:grid-cols-[280px_1fr]">
-          <Card>
+          <Card hover={false}>
             <KnowledgeBaseList
               kbs={kbs}
               selectedId={selectedId}
@@ -151,7 +147,7 @@ export default function KnowledgeBasesPage() {
             />
           </Card>
 
-          <Card>
+          <Card hover={false}>
             {loadingDetail ? (
               <div className="flex items-center gap-2 text-sm text-slate-400">
                 <Loader2 size={16} className="animate-spin" /> กำลังโหลด...

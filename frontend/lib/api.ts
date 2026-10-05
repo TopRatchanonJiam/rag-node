@@ -211,7 +211,7 @@ export async function getSettings(): Promise<{
 }
 
 // การเชื่อมต่อผู้ให้บริการ (ผู้ใช้เพิ่มเองได้) — api_key: "" = ใช้ค่าเดิม, null = ลบ
-export type ProviderInput = { name: string; type: ProtocolId; base_url: string; api_key: string | null };
+export type ProviderInput = { name: string; base_url: string; api_key: string | null; type?: ProtocolId };
 
 export async function createProvider(body: ProviderInput): Promise<ProviderConn> {
   return request("/api/admin/providers", { method: "POST", body: JSON.stringify(body) });

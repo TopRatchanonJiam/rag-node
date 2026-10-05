@@ -143,6 +143,14 @@ function Panel({ icon, title, description, action, children }: { icon: ReactNode
 
 // ── หน้าต่างเพิ่ม/แก้ไขการเชื่อมต่อ ──────────────────────
 
+function detectType(url: string, fallback?: ProtocolId): ProtocolId {
+  const u = url.trim().toLowerCase();
+  if (!u) return fallback ?? "google";
+  if (u.includes("generativelanguage.googleapis.com") && !u.includes("/openai")) return "google";
+  if (u.includes(":11434") || u.includes("ollama")) return "ollama";
+  return "openai_compatible";
+}
+
 function ConnectionModal({
   conn,
   protocols,
@@ -158,22 +166,21 @@ function ConnectionModal({
 }) {
   const [picked, setPicked] = useState<boolean>(!!conn);
   const [name, setName] = useState(conn?.name ?? "");
-  const [type, setType] = useState<ProtocolId>(conn?.type ?? "openai_compatible");
   const [baseUrl, setBaseUrl] = useState(conn?.base_url ?? "");
   const [apiKey, setApiKey] = useState<SecretInput>("");
   const [busy, setBusy] = useState<"test" | "save" | "delete" | null>(null);
   const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
+  const type = detectType(baseUrl, conn?.type);
   const proto = protocols[type];
 
   function applyPreset(p: ProviderPreset) {
     setName(p.id === "custom" ? "" : p.name);
-    setType(p.type);
     setBaseUrl(p.base_url);
     setPicked(true);
     setMsg(null);
   }
 
-  const body = () => ({ name, type, base_url: proto?.needs_url ? baseUrl : "", api_key: proto?.key === "none" ? "" : apiKey === null ? null : apiKey.trim() });
+  const body = () => ({ name, base_url: baseUrl.trim(), api_key: apiKey === null ? null : apiKey.trim() });
 
   async function run(kind: "test" | "save" | "delete") {
     setBusy(kind);
@@ -240,21 +247,24 @@ function ConnectionModal({
         <Field label="ชื่อการเชื่อมต่อ" hint="ตั้งให้จำง่าย เช่น ‘Ollama ห้อง Server’ หรือ ‘OpenRouter บัญชีบริษัท’">
           <input className="field" value={name} onChange={(e) => setName(e.target.value)} placeholder="ชื่อ" />
         </Field>
-        <Field label="รูปแบบ API" hint={proto?.hint}>
-          <select className="field" value={type} onChange={(e) => setType(e.target.value as ProtocolId)}>
-            {(Object.entries(protocols) as [ProtocolId, ProtocolInfo][]).map(([id, p]) => (
-              <option key={id} value={id}>{p.label}</option>
-            ))}
-          </select>
+        <Field
+          label="URL"
+          hint={
+            <>
+              ระบบจะรู้เองว่าเป็น <span className="font-medium text-accent-600">{protocols[type]?.label}</span>
+              {type === "ollama" ? " — ไม่ต้องใส่ /v1" : type === "openai_compatible" ? " — ปกติลงท้ายด้วย /v1" : ""}
+            </>
+          }
+        >
+          <input className="field font-mono text-[13px]" value={baseUrl} onChange={(e) => setBaseUrl(e.target.value)} placeholder="https://api.example.com/v1" spellCheck={false} />
         </Field>
-        {proto?.needs_url && (
-          <Field label="ที่อยู่เซิร์ฟเวอร์ (URL)">
-            <input className="field" value={baseUrl} onChange={(e) => setBaseUrl(e.target.value)} placeholder={type === "ollama" ? "http://192.168.1.10:11434" : "https://example.com/v1"} />
-          </Field>
-        )}
-        {proto?.key !== "none" && (
-          <SecretField label="API key" mask={conn?.api_key ?? NO_MASK} value={apiKey} onChange={setApiKey} optional={proto?.key === "optional"} />
-        )}
+        <SecretField
+          label={type === "ollama" ? "API key (ไม่ต้องใส่สำหรับ Ollama)" : "API key"}
+          mask={conn?.api_key ?? NO_MASK}
+          value={apiKey}
+          onChange={setApiKey}
+          optional={type !== "google"}
+        />
         {msg && (
           <p className={`flex items-start gap-1.5 rounded-lg px-3 py-2 text-xs ${msg.ok ? "bg-brand-50 text-brand-800" : "bg-rose-50 text-rose-700"}`}>
             {msg.ok ? <CheckCircle2 size={14} className="mt-px shrink-0" /> : <XCircle size={14} className="mt-px shrink-0" />}

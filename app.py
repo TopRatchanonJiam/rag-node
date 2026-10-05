@@ -214,7 +214,7 @@ PROTOCOLS: dict[str, dict] = {
 
 # แม่แบบสำหรับกรอกให้อัตโนมัติตอนเพิ่มการเชื่อมต่อ — ไม่ได้จำกัดว่าต่อได้แค่นี้ ("กำหนดเอง" ใช้กับเจ้าใดก็ได้)
 PRESETS: list[dict] = [
-    {"id": "gemini", "name": "Google Gemini", "type": "google", "base_url": ""},
+    {"id": "gemini", "name": "Google Gemini", "type": "google", "base_url": "https://generativelanguage.googleapis.com"},
     {"id": "openai", "name": "OpenAI", "type": "openai_compatible", "base_url": "https://api.openai.com/v1"},
     {"id": "siliconflow", "name": "SiliconFlow", "type": "openai_compatible", "base_url": "https://api.siliconflow.com/v1"},
     {"id": "openrouter", "name": "OpenRouter", "type": "openai_compatible", "base_url": "https://openrouter.ai/api/v1"},
@@ -653,19 +653,28 @@ def get_settings():
 
 class ProviderIn(BaseModel):
     name: str
-    type: str
     base_url: str = ""
     api_key: str | None = ""  # "" = ใช้ค่าเดิม (ตอนแก้ไข), null = ลบ
+    type: str | None = None   # ไม่ต้องส่ง — ระบบเดาจาก URL
+
+
+def detect_type(base_url: str, existing_type: str | None = None) -> str:
+    """เดารูปแบบ API จาก URL ให้ผู้ใช้กรอกแค่ URL/key เหมือนใส่ใน .env"""
+    url = (base_url or "").strip().lower()
+    if not url:
+        return existing_type or "google"
+    if "generativelanguage.googleapis.com" in url and "/openai" not in url:
+        return "google"
+    if ":11434" in url or "ollama" in url:
+        return "ollama"
+    return "openai_compatible"
 
 
 def _provider_from_input(req: ProviderIn, existing: dict | None = None) -> dict:
-    if req.type not in PROTOCOLS:
-        raise HTTPException(400, f"ไม่รองรับรูปแบบ API '{req.type}'")
     if not req.name.strip():
         raise HTTPException(400, "กรุณาตั้งชื่อการเชื่อมต่อ")
-    if PROTOCOLS[req.type]["needs_url"] and not req.base_url.strip():
-        raise HTTPException(400, "กรุณาใส่ URL ของเซิร์ฟเวอร์")
-    prov = {"name": req.name.strip(), "type": req.type, "base_url": req.base_url.strip(),
+    typ = req.type if req.type in PROTOCOLS else detect_type(req.base_url, (existing or {}).get("type"))
+    prov = {"name": req.name.strip(), "type": typ, "base_url": req.base_url.strip(),
             "api_key": (existing or {}).get("api_key", "")}
     _apply_secret(prov, "api_key", req.api_key)
     if req.type == "google" and not prov["api_key"]:
@@ -712,11 +721,12 @@ def delete_provider(pid: str):
 def test_provider(body: dict = Body(...)):
     """ทดสอบการเชื่อมต่อที่ยังไม่บันทึก (หรือที่แก้อยู่) โดยดึงรายชื่อโมเดล — ช่อง key ว่าง = ใช้ key เดิมของ id นั้น"""
     existing = load_settings()["providers"].get(body.get("id") or "", {})
-    prov = {"type": body.get("type"), "base_url": (body.get("base_url") or "").strip(), "api_key": existing.get("api_key", "")}
+    base = (body.get("base_url") or "").strip()
+    prov = {"type": detect_type(base, existing.get("type")), "base_url": base, "api_key": existing.get("api_key", "")}
     _apply_secret(prov, "api_key", body.get("api_key", ""))
-    if prov["type"] not in PROTOCOLS:
-        raise HTTPException(400, "เลือกรูปแบบ API ก่อน")
-    return {"models": list_provider_models(prov)}
+    if prov["type"] == "google" and not prov["api_key"]:
+        raise HTTPException(400, "ใส่ API key ก่อน")
+    return {"models": list_provider_models(prov), "type": prov["type"]}
 
 
 @app.post("/api/admin/providers/{pid}/models")

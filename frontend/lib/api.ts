@@ -1,4 +1,4 @@
-import type { AdminStatus, Chatbot, CheckResult, KnowledgeBase, NodeSettings, ProviderCatalogItem, ProviderModel, SkillSet } from "./types";
+import type { AdminStatus, Chatbot, CheckResult, KnowledgeBase, NodeSettings, ProtocolId, ProtocolInfo, ProviderConn, ProviderModel, ProviderPreset, SkillSet } from "./types";
 
 // หน้าเว็บถูกเสิร์ฟจาก node ตัวเดียวกับ API (origin เดียวกัน) — ใช้ path แบบ relative
 export const API_BASE = (process.env.NEXT_PUBLIC_API_URL || "").replace(/\/$/, "");
@@ -203,20 +203,34 @@ export type SettingsInput = {
 
 export async function getSettings(): Promise<{
   settings: NodeSettings;
-  catalog: Record<string, ProviderCatalogItem>;
+  protocols: Record<ProtocolId, ProtocolInfo>;
+  presets: ProviderPreset[];
   kb_count: number;
 }> {
   return request("/api/admin/settings");
 }
 
-export async function listProviderModels(
-  providerId: string,
-  credentials?: Record<string, Primitive>
-): Promise<{ models: ProviderModel[] }> {
-  return request(`/api/admin/providers/${encodeURIComponent(providerId)}/models`, {
-    method: "POST",
-    body: JSON.stringify({ credentials: credentials ?? {} }),
-  });
+// การเชื่อมต่อผู้ให้บริการ (ผู้ใช้เพิ่มเองได้) — api_key: "" = ใช้ค่าเดิม, null = ลบ
+export type ProviderInput = { name: string; type: ProtocolId; base_url: string; api_key: string | null };
+
+export async function createProvider(body: ProviderInput): Promise<ProviderConn> {
+  return request("/api/admin/providers", { method: "POST", body: JSON.stringify(body) });
+}
+
+export async function updateProvider(id: string, body: ProviderInput): Promise<ProviderConn> {
+  return request(`/api/admin/providers/${encodeURIComponent(id)}`, { method: "PUT", body: JSON.stringify(body) });
+}
+
+export async function deleteProvider(id: string): Promise<{ message: string }> {
+  return request(`/api/admin/providers/${encodeURIComponent(id)}`, { method: "DELETE" });
+}
+
+export async function testProvider(body: Partial<ProviderInput> & { id?: string }): Promise<{ models: ProviderModel[] }> {
+  return request("/api/admin/providers/test", { method: "POST", body: JSON.stringify(body) });
+}
+
+export async function listProviderModels(providerId: string): Promise<{ models: ProviderModel[] }> {
+  return request(`/api/admin/providers/${encodeURIComponent(providerId)}/models`, { method: "POST" });
 }
 
 export async function testSettings(settings: SettingsInput): Promise<CheckResult> {

@@ -78,15 +78,26 @@ export type SecretMask = { set: boolean; hint: string };
 
 export type ModelRole = "llm" | "embedding" | "rerank";
 
-export interface ProviderCatalogItem {
+export type ProtocolId = "openai_compatible" | "google" | "ollama";
+
+export interface ProtocolInfo {
   label: string;
-  base_url: string | null;
-  fields: ("api_key" | "base_url")[];
-  roles: ModelRole[];
+  needs_url: boolean;
+  key: "optional" | "required" | "none";
   hint: string;
 }
 
-export interface ProviderState {
+export interface ProviderPreset {
+  id: string;
+  name: string;
+  type: ProtocolId;
+  base_url: string;
+}
+
+export interface ProviderConn {
+  id: string;
+  name: string;
+  type: ProtocolId;
   base_url: string;
   api_key: SecretMask;
   configured: boolean;
@@ -99,7 +110,7 @@ export interface ModelsSettings {
 }
 
 export interface NodeSettings {
-  providers: Record<string, ProviderState>;
+  providers: ProviderConn[];
   models: ModelsSettings;
   vector: { url: string; api_key: SecretMask };
   central: { url: string; license_key: SecretMask };

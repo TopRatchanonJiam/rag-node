@@ -204,17 +204,36 @@ SECTIONS = ("providers", "models", "vector", "central")
 SECRET_FIELDS = {"api_key", "license_key"}
 _settings_cache: dict | None = None
 
-PROVIDER_CATALOG: dict[str, dict] = {
-    "google": {"label": "Google Gemini", "base_url": None, "fields": ["api_key"], "roles": ["llm", "embedding"],
-               "hint": "สร้าง key ที่ aistudio.google.com"},
-    "openai": {"label": "OpenAI", "base_url": "https://api.openai.com/v1", "fields": ["api_key"], "roles": ["llm", "embedding"],
-               "hint": "สร้าง key ที่ platform.openai.com"},
-    "siliconflow": {"label": "SiliconFlow", "base_url": "https://api.siliconflow.com/v1", "fields": ["api_key"],
-                    "roles": ["llm", "embedding", "rerank"], "hint": "สร้าง key ที่ cloud.siliconflow.com"},
-    "ollama": {"label": "Ollama", "base_url": None, "fields": ["base_url"], "roles": ["llm", "embedding"],
-               "hint": "เซิร์ฟเวอร์ในองค์กร เช่น http://192.168.1.10:11434 (ไม่ต้องใส่ /v1)"},
-    "custom": {"label": "OpenAI-compatible อื่น ๆ", "base_url": None, "fields": ["base_url", "api_key"],
-               "roles": ["llm", "embedding", "rerank"], "hint": "เช่น LM Studio, vLLM, OpenRouter — URL ปกติลงท้ายด้วย /v1"},
+# รูปแบบ API ที่ระบบคุยได้ (ต้องมีในโค้ด เพราะเป็นวิธีเรียกโมเดล) — ผู้ให้บริการแทบทุกเจ้าใช้แบบ OpenAI ได้
+PROTOCOLS: dict[str, dict] = {
+    "openai_compatible": {"label": "OpenAI-compatible API", "needs_url": True, "key": "optional",
+                          "hint": "ใช้ได้กับผู้ให้บริการส่วนใหญ่ เช่น OpenAI, OpenRouter, Groq, DeepSeek, vLLM, LM Studio — URL ปกติลงท้ายด้วย /v1"},
+    "google": {"label": "Google Gemini API", "needs_url": False, "key": "required", "hint": "สร้าง key ที่ aistudio.google.com"},
+    "ollama": {"label": "Ollama", "needs_url": True, "key": "none", "hint": "เช่น http://192.168.1.10:11434 (ไม่ต้องใส่ /v1)"},
+}
+
+# แม่แบบสำหรับกรอกให้อัตโนมัติตอนเพิ่มการเชื่อมต่อ — ไม่ได้จำกัดว่าต่อได้แค่นี้ ("กำหนดเอง" ใช้กับเจ้าใดก็ได้)
+PRESETS: list[dict] = [
+    {"id": "gemini", "name": "Google Gemini", "type": "google", "base_url": ""},
+    {"id": "openai", "name": "OpenAI", "type": "openai_compatible", "base_url": "https://api.openai.com/v1"},
+    {"id": "siliconflow", "name": "SiliconFlow", "type": "openai_compatible", "base_url": "https://api.siliconflow.com/v1"},
+    {"id": "openrouter", "name": "OpenRouter", "type": "openai_compatible", "base_url": "https://openrouter.ai/api/v1"},
+    {"id": "groq", "name": "Groq", "type": "openai_compatible", "base_url": "https://api.groq.com/openai/v1"},
+    {"id": "deepseek", "name": "DeepSeek", "type": "openai_compatible", "base_url": "https://api.deepseek.com/v1"},
+    {"id": "together", "name": "Together AI", "type": "openai_compatible", "base_url": "https://api.together.xyz/v1"},
+    {"id": "mistral", "name": "Mistral AI", "type": "openai_compatible", "base_url": "https://api.mistral.ai/v1"},
+    {"id": "ollama", "name": "Ollama", "type": "ollama", "base_url": "http://localhost:11434"},
+    {"id": "lmstudio", "name": "LM Studio", "type": "openai_compatible", "base_url": "http://localhost:1234/v1"},
+    {"id": "custom", "name": "กำหนดเอง", "type": "openai_compatible", "base_url": ""},
+]
+
+# สำหรับแปลงการตั้งค่ารุ่นก่อนที่ผูก id ตายตัว
+_LEGACY_PROVIDERS = {
+    "google": ("Google Gemini", "google", ""),
+    "openai": ("OpenAI", "openai_compatible", "https://api.openai.com/v1"),
+    "siliconflow": ("SiliconFlow", "openai_compatible", "https://api.siliconflow.com/v1"),
+    "ollama": ("Ollama", "ollama", ""),
+    "custom": ("OpenAI-compatible", "openai_compatible", ""),
 }
 
 
@@ -263,7 +282,7 @@ def _provider_id_for(cfg: dict) -> str:
 
 def _from_role_schema(old: dict) -> dict:
     """แปลงการตั้งค่ารุ่นก่อน (llm/embedding/rerank แยกกันพร้อม key ในตัว) เป็น providers + models"""
-    providers = {pid: {"api_key": "", "base_url": ""} for pid in PROVIDER_CATALOG}
+    providers = {pid: {"api_key": "", "base_url": ""} for pid in _LEGACY_PROVIDERS}
     models: dict = {}
     for role in ("llm", "embedding", "rerank"):
         cfg = old.get(role) or {}
@@ -330,8 +349,10 @@ def load_settings() -> dict:
         _write_settings(_from_role_schema(old))
         return load_settings()
     settings = {s: _secret_map(s, json.loads(rows.get(s, "{}")), _dec) for s in SECTIONS}
-    for pid in PROVIDER_CATALOG:
-        settings["providers"].setdefault(pid, {"api_key": "", "base_url": ""})
+    if any("type" not in prov for prov in settings["providers"].values()):
+        _upgrade_providers(settings)
+        _write_settings(settings)
+        return load_settings()
     models = settings["models"]
     models.setdefault("llm", {"provider": "google", "model": ""})
     models.setdefault("embedding", {"provider": "siliconflow", "model": "", "dim": 0})
@@ -347,20 +368,36 @@ def _mask(value: str) -> dict:
     return {"set": bool(value), "hint": f"••••{value[-4:]}" if len(value) >= 8 else ("••••" if value else "")}
 
 
-def provider_configured(pid: str, prov: dict) -> bool:
-    fields = PROVIDER_CATALOG[pid]["fields"]
-    if "base_url" in fields and not prov.get("base_url"):
-        return False
-    if pid in ("google", "openai", "siliconflow") and not prov.get("api_key"):
-        return False
-    return True
+def _upgrade_providers(settings: dict) -> None:
+    """providers รุ่นก่อน (id ตายตัว ไม่มี type) → การเชื่อมต่อแบบ dynamic — คง id เดิมไว้ให้ models อ้างถึงได้"""
+    used = {m.get("provider") for m in settings["models"].values()}
+    out = {}
+    for pid, prov in settings["providers"].items():
+        if "type" in prov:
+            out[pid] = prov
+            continue
+        name, typ, base = _LEGACY_PROVIDERS.get(pid, (pid, "openai_compatible", ""))
+        if not (prov.get("api_key") or prov.get("base_url")) and pid not in used:
+            continue
+        out[pid] = {"name": name, "type": typ, "base_url": prov.get("base_url") or base, "api_key": prov.get("api_key", "")}
+    settings["providers"] = out
+
+
+def provider_configured(prov: dict) -> bool:
+    typ = prov.get("type")
+    if typ == "google":
+        return bool(prov.get("api_key"))
+    return bool(prov.get("base_url"))
+
+
+def public_provider(pid: str, prov: dict) -> dict:
+    return {"id": pid, "name": prov.get("name") or pid, "type": prov.get("type"), "base_url": prov.get("base_url", ""),
+            "api_key": _mask(prov.get("api_key", "")), "configured": provider_configured(prov)}
 
 
 def public_settings(settings: dict) -> dict:
     return {
-        "providers": {pid: {"base_url": prov.get("base_url", ""), "api_key": _mask(prov.get("api_key", "")),
-                            "configured": provider_configured(pid, prov)}
-                      for pid, prov in settings["providers"].items() if pid in PROVIDER_CATALOG},
+        "providers": [public_provider(pid, prov) for pid, prov in settings["providers"].items()],
         "models": settings["models"],
         "vector": {"url": settings["vector"].get("url", ""), "api_key": _mask(settings["vector"].get("api_key", ""))},
         "central": {"url": settings["central"].get("url", ""), "license_key": _mask(settings["central"].get("license_key", ""))},
@@ -378,9 +415,9 @@ def _apply_secret(target: dict, key: str, value) -> None:
 def merge_settings(current: dict, incoming: dict) -> dict:
     merged = json.loads(json.dumps(current))
     for pid, values in (incoming.get("providers") or {}).items():
-        if pid not in PROVIDER_CATALOG:
+        if pid not in merged["providers"]:
             continue
-        prov = merged["providers"].setdefault(pid, {"api_key": "", "base_url": ""})
+        prov = merged["providers"][pid]
         if "api_key" in values:
             _apply_secret(prov, "api_key", values["api_key"])
         if "base_url" in values:
@@ -389,7 +426,7 @@ def merge_settings(current: dict, incoming: dict) -> dict:
         if role not in ("llm", "embedding", "rerank"):
             continue
         m = merged["models"].setdefault(role, {})
-        if "provider" in values and values["provider"] in PROVIDER_CATALOG:
+        if "provider" in values and values["provider"] in merged["providers"]:
             m["provider"] = values["provider"]
         if "model" in values:
             m["model"] = (values["model"] or "").strip()
@@ -406,23 +443,24 @@ def merge_settings(current: dict, incoming: dict) -> dict:
     return merged
 
 
-def _endpoint(pid: str, prov: dict) -> tuple[str, str | None, str]:
-    """(provider ที่ central รู้จัก, base_url, api_key) — ollama/อื่น ๆ ใช้ endpoint แบบ OpenAI
-    (แปลงที่ node เพื่อให้ใช้ได้แม้ central ยังเป็นรุ่นที่ไม่รู้จัก ollama)"""
+def _endpoint(prov: dict) -> tuple[str, str | None, str]:
+    """(provider ที่ central รู้จัก, base_url, api_key) ตามรูปแบบ API ของการเชื่อมต่อ — ollama ใช้ endpoint
+    แบบ OpenAI ที่ /v1 (แปลงที่ node เพื่อให้ใช้ได้แม้ central ยังเป็นรุ่นที่ไม่รู้จัก ollama)"""
     key = prov.get("api_key", "")
-    if pid == "google":
+    typ = prov.get("type")
+    if typ == "google":
         return "google", None, key
-    if pid == "ollama":
-        base = (prov.get("base_url") or "http://localhost:11434").rstrip("/")
+    base = (prov.get("base_url") or "").strip().rstrip("/")
+    if typ == "ollama":
+        base = base or "http://localhost:11434"
         return "openai_compatible", base if base.endswith("/v1") else f"{base}/v1", key or "ollama"
-    base = PROVIDER_CATALOG[pid]["base_url"] or (prov.get("base_url") or "").rstrip("/")
     return "openai_compatible", base or None, key or "not-needed"
 
 
 def _role_creds(s: dict, role: str) -> dict:
     m = s["models"][role]
-    pid = m.get("provider") if m.get("provider") in PROVIDER_CATALOG else "custom"
-    kind, base, key = _endpoint(pid, s["providers"].get(pid, {}))
+    prov = s["providers"].get(m.get("provider") or "", {})
+    kind, base, key = _endpoint(prov)
     out = {"provider": kind, "model": m.get("model", ""), "api_key": key}
     if base:
         out["base_url"] = base
@@ -457,10 +495,10 @@ def _guess_kinds(model_id: str) -> list[str]:
     return ["llm"]
 
 
-def list_provider_models(pid: str, prov: dict) -> list[dict]:
+def list_provider_models(prov: dict) -> list[dict]:
     """ดึงรายชื่อโมเดลจากผู้ให้บริการโดยตรง (ใช้แสดงตัวเลือกในหน้าตั้งค่าเท่านั้น)"""
     try:
-        if pid == "google":
+        if prov.get("type") == "google":
             if not prov.get("api_key"):
                 raise HTTPException(400, "ใส่ API key ก่อน")
             r = httpx.get("https://generativelanguage.googleapis.com/v1beta/models",
@@ -473,7 +511,7 @@ def list_provider_models(pid: str, prov: dict) -> list[dict]:
                 if kinds:
                     out.append({"id": m["name"].removeprefix("models/"), "kinds": kinds})
             return sorted(out, key=lambda x: x["id"])
-        _, base, key = _endpoint(pid, prov)
+        _, base, key = _endpoint(prov)
         if not base:
             raise HTTPException(400, "ใส่ URL ของเซิร์ฟเวอร์ก่อน")
         headers = {"Authorization": f"Bearer {key}"} if key and key not in ("ollama", "not-needed") else {}
@@ -610,15 +648,83 @@ def healthz():
 @app.get("/api/admin/settings")
 def get_settings():
     s = load_settings()
-    return {"settings": public_settings(s), "catalog": PROVIDER_CATALOG, "kb_count": len(db_all("kbs"))}
+    return {"settings": public_settings(s), "protocols": PROTOCOLS, "presets": PRESETS, "kb_count": len(db_all("kbs"))}
+
+
+class ProviderIn(BaseModel):
+    name: str
+    type: str
+    base_url: str = ""
+    api_key: str | None = ""  # "" = ใช้ค่าเดิม (ตอนแก้ไข), null = ลบ
+
+
+def _provider_from_input(req: ProviderIn, existing: dict | None = None) -> dict:
+    if req.type not in PROTOCOLS:
+        raise HTTPException(400, f"ไม่รองรับรูปแบบ API '{req.type}'")
+    if not req.name.strip():
+        raise HTTPException(400, "กรุณาตั้งชื่อการเชื่อมต่อ")
+    if PROTOCOLS[req.type]["needs_url"] and not req.base_url.strip():
+        raise HTTPException(400, "กรุณาใส่ URL ของเซิร์ฟเวอร์")
+    prov = {"name": req.name.strip(), "type": req.type, "base_url": req.base_url.strip(),
+            "api_key": (existing or {}).get("api_key", "")}
+    _apply_secret(prov, "api_key", req.api_key)
+    if req.type == "google" and not prov["api_key"]:
+        raise HTTPException(400, "Google Gemini ต้องใช้ API key")
+    return prov
+
+
+def _save_providers(providers: dict) -> None:
+    s = load_settings()
+    _write_settings({**s, "providers": providers})
+
+
+@app.post("/api/admin/providers")
+def create_provider(req: ProviderIn):
+    s = load_settings()
+    pid = "p_" + _new_id()[:8]
+    _save_providers({**s["providers"], pid: _provider_from_input(req)})
+    return public_provider(pid, load_settings()["providers"][pid])
+
+
+@app.put("/api/admin/providers/{pid}")
+def update_provider(pid: str, req: ProviderIn):
+    s = load_settings()
+    if pid not in s["providers"]:
+        raise HTTPException(404, "ไม่พบการเชื่อมต่อนี้")
+    _save_providers({**s["providers"], pid: _provider_from_input(req, s["providers"][pid])})
+    return public_provider(pid, load_settings()["providers"][pid])
+
+
+@app.delete("/api/admin/providers/{pid}")
+def delete_provider(pid: str):
+    s = load_settings()
+    if pid not in s["providers"]:
+        raise HTTPException(404, "ไม่พบการเชื่อมต่อนี้")
+    used = [{"llm": "LLM", "embedding": "Embedding", "rerank": "Rerank"}[r]
+            for r, m in s["models"].items() if m.get("provider") == pid]
+    if used:
+        raise HTTPException(409, f"การเชื่อมต่อนี้ใช้อยู่กับ {', '.join(used)} — เปลี่ยนโมเดลในส่วน ‘โมเดลที่ใช้ในระบบ’ ก่อนลบ")
+    _save_providers({k: v for k, v in s["providers"].items() if k != pid})
+    return {"message": "ลบการเชื่อมต่อแล้ว"}
+
+
+@app.post("/api/admin/providers/test")
+def test_provider(body: dict = Body(...)):
+    """ทดสอบการเชื่อมต่อที่ยังไม่บันทึก (หรือที่แก้อยู่) โดยดึงรายชื่อโมเดล — ช่อง key ว่าง = ใช้ key เดิมของ id นั้น"""
+    existing = load_settings()["providers"].get(body.get("id") or "", {})
+    prov = {"type": body.get("type"), "base_url": (body.get("base_url") or "").strip(), "api_key": existing.get("api_key", "")}
+    _apply_secret(prov, "api_key", body.get("api_key", ""))
+    if prov["type"] not in PROTOCOLS:
+        raise HTTPException(400, "เลือกรูปแบบ API ก่อน")
+    return {"models": list_provider_models(prov)}
 
 
 @app.post("/api/admin/providers/{pid}/models")
-def provider_models(pid: str, body: dict = Body(default={})):
-    if pid not in PROVIDER_CATALOG:
-        raise HTTPException(404, "ไม่รู้จักผู้ให้บริการนี้")
-    s = merge_settings(load_settings(), {"providers": {pid: body.get("credentials") or {}}})
-    return {"models": list_provider_models(pid, s["providers"][pid])}
+def provider_models(pid: str):
+    prov = load_settings()["providers"].get(pid)
+    if not prov:
+        raise HTTPException(404, "ไม่พบการเชื่อมต่อนี้")
+    return {"models": list_provider_models(prov)}
 
 
 def _run_check(settings: dict) -> dict:
@@ -715,7 +821,7 @@ def admin_status():
         "models": {"llm": {"provider": s["models"]["llm"].get("provider"), "model": s["models"]["llm"].get("model")},
                    "embedding": embedding_lock_info(s),
                    "rerank": bool(s["models"]["rerank"].get("enabled") and s["models"]["rerank"].get("model"))},
-        "provider_labels": {pid: c["label"] for pid, c in PROVIDER_CATALOG.items()},
+        "provider_labels": {pid: prov.get("name") or pid for pid, prov in s["providers"].items()},
         "counts": {"kbs": len(kbs), "files": sum(len(kb.get("files", {})) for kb in kbs),
                    "chunks": sum(f.get("chunks", 0) for kb in kbs for f in kb.get("files", {}).values()),
                    "bots": len(db_all("bots")), "skills": len(db_all("skills"))},

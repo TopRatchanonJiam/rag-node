@@ -3,16 +3,19 @@
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 import {
   AlertTriangle,
+  ArrowLeft,
   CheckCircle2,
   Cpu,
   Database,
   KeyRound,
   Loader2,
   Lock,
+  Plus,
   RefreshCw,
   Save,
   Server,
   Settings2,
+  Trash2,
   XCircle,
 } from "lucide-react";
 import { ErrorNote, PageHeader } from "@/components/admin/AdminShell";
@@ -20,11 +23,15 @@ import { Button } from "@/components/ui/Button";
 import { Modal } from "@/components/ui/Modal";
 import {
   EmbeddingChangeError,
+  createProvider,
+  deleteProvider,
   getSettings,
   listProviderModels,
   runFullCheck,
   saveSettings,
+  testProvider,
   testSettings,
+  updateProvider,
   type SettingsInput,
 } from "@/lib/api";
 import type {
@@ -33,32 +40,32 @@ import type {
   ModelRole,
   ModelsSettings,
   NodeSettings,
-  ProviderCatalogItem,
+  ProtocolId,
+  ProtocolInfo,
+  ProviderConn,
   ProviderModel,
+  ProviderPreset,
   SecretMask,
 } from "@/lib/types";
 
-// ── ตกแต่งการ์ดผู้ให้บริการ ──────────────────────────────
+// ── ตกแต่ง ────────────────────────────────────────────
 
-const PROVIDER_STYLE: Record<string, { bg: string; text: string; mark: string }> = {
-  google: { bg: "bg-sky-50", text: "text-sky-700", mark: "G" },
-  openai: { bg: "bg-accent-900", text: "text-white", mark: "AI" },
-  siliconflow: { bg: "bg-violet-50", text: "text-violet-700", mark: "SF" },
-  ollama: { bg: "bg-amber-50", text: "text-amber-700", mark: "OL" },
-  custom: { bg: "bg-brand-50", text: "text-brand-700", mark: "</>" },
+const TYPE_STYLE: Record<string, string> = {
+  google: "bg-sky-50 text-sky-700",
+  ollama: "bg-amber-50 text-amber-700",
+  openai_compatible: "bg-brand-50 text-brand-700",
 };
 
-const ROLE_LABEL: Record<ModelRole, string> = { llm: "LLM", embedding: "Embedding", rerank: "Rerank" };
+function initials(name: string) {
+  const words = name.trim().split(/\s+/).filter(Boolean);
+  if (words.length >= 2) return (words[0][0] + words[1][0]).toUpperCase();
+  return (name.trim().slice(0, 2) || "AI").toUpperCase();
+}
 
-function ProviderMark({ pid, size = "md" }: { pid: string; size?: "md" | "lg" }) {
-  const s = PROVIDER_STYLE[pid] ?? PROVIDER_STYLE.custom;
+function Mark({ name, type, size = "md" }: { name: string; type: string; size?: "md" | "lg" }) {
   return (
-    <span
-      className={`flex shrink-0 items-center justify-center rounded-xl font-semibold ${s.bg} ${s.text} ${
-        size === "lg" ? "h-11 w-11 text-sm" : "h-9 w-9 text-xs"
-      }`}
-    >
-      {s.mark}
+    <span className={`flex shrink-0 items-center justify-center rounded-xl font-semibold ${TYPE_STYLE[type] ?? TYPE_STYLE.openai_compatible} ${size === "lg" ? "h-11 w-11 text-sm" : "h-9 w-9 text-xs"}`}>
+      {initials(name)}
     </span>
   );
 }
@@ -67,6 +74,7 @@ function ProviderMark({ pid, size = "md" }: { pid: string; size?: "md" | "lg" })
 
 type SecretInput = string | null; // "" = ใช้ค่าเดิม, ข้อความ = ค่าใหม่, null = ลบ
 const secretOut = (v: SecretInput) => (v === null ? null : v.trim() ? v.trim() : undefined);
+const NO_MASK: SecretMask = { set: false, hint: "" };
 
 function Field({ label, hint, children }: { label: string; hint?: ReactNode; children: ReactNode }) {
   return (
@@ -81,10 +89,7 @@ function Field({ label, hint, children }: { label: string; hint?: ReactNode; chi
 function SecretField({ label, mask, value, onChange, optional }: { label: string; mask: SecretMask; value: SecretInput; onChange: (v: SecretInput) => void; optional?: boolean }) {
   const cleared = value === null;
   return (
-    <Field
-      label={label}
-      hint={cleared ? "จะลบเมื่อกดบันทึก" : mask.set ? "เว้นว่างไว้ = ใช้ค่าเดิม" : optional ? "ไม่บังคับ" : undefined}
-    >
+    <Field label={label} hint={cleared ? "จะลบเมื่อกดบันทึก" : mask.set ? "เว้นว่างไว้ = ใช้ค่าเดิม" : optional ? "ไม่บังคับ" : undefined}>
       <div className="flex gap-2">
         <div className="relative flex-1">
           <KeyRound size={14} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-accent-400" />
@@ -136,88 +141,140 @@ function Panel({ icon, title, description, action, children }: { icon: ReactNode
   );
 }
 
-// ── หน้าต่างตั้งค่าผู้ให้บริการ ───────────────────────────
+// ── หน้าต่างเพิ่ม/แก้ไขการเชื่อมต่อ ──────────────────────
 
-function ProviderModal({
-  pid,
-  info,
-  state,
+function ConnectionModal({
+  conn,
+  protocols,
+  presets,
   onClose,
   onSaved,
 }: {
-  pid: string;
-  info: ProviderCatalogItem;
-  state: NodeSettings["providers"][string];
+  conn: ProviderConn | null; // null = เพิ่มใหม่
+  protocols: Record<ProtocolId, ProtocolInfo>;
+  presets: ProviderPreset[];
   onClose: () => void;
   onSaved: () => Promise<void>;
 }) {
-  const [baseUrl, setBaseUrl] = useState(state.base_url ?? "");
+  const [picked, setPicked] = useState<boolean>(!!conn);
+  const [name, setName] = useState(conn?.name ?? "");
+  const [type, setType] = useState<ProtocolId>(conn?.type ?? "openai_compatible");
+  const [baseUrl, setBaseUrl] = useState(conn?.base_url ?? "");
   const [apiKey, setApiKey] = useState<SecretInput>("");
-  const [testing, setTesting] = useState(false);
-  const [saving, setSaving] = useState(false);
-  const [test, setTest] = useState<{ ok: boolean; text: string } | null>(null);
+  const [busy, setBusy] = useState<"test" | "save" | "delete" | null>(null);
+  const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
+  const proto = protocols[type];
 
-  const creds = () => {
-    const c: Record<string, string | null | undefined> = {};
-    if (info.fields.includes("base_url")) c.base_url = baseUrl;
-    if (info.fields.includes("api_key")) c.api_key = secretOut(apiKey);
-    return c;
-  };
-
-  async function handleTest() {
-    setTesting(true);
-    setTest(null);
-    try {
-      const { models } = await listProviderModels(pid, creds());
-      setTest({ ok: true, text: `เชื่อมต่อได้ — พบ ${models.length} โมเดล` });
-    } catch (e) {
-      setTest({ ok: false, text: e instanceof Error ? e.message : "เชื่อมต่อไม่ได้" });
-    } finally {
-      setTesting(false);
-    }
+  function applyPreset(p: ProviderPreset) {
+    setName(p.id === "custom" ? "" : p.name);
+    setType(p.type);
+    setBaseUrl(p.base_url);
+    setPicked(true);
+    setMsg(null);
   }
 
-  async function handleSave() {
-    setSaving(true);
+  const body = () => ({ name, type, base_url: proto?.needs_url ? baseUrl : "", api_key: proto?.key === "none" ? "" : apiKey === null ? null : apiKey.trim() });
+
+  async function run(kind: "test" | "save" | "delete") {
+    setBusy(kind);
+    setMsg(null);
     try {
-      await saveSettings({ providers: { [pid]: creds() } });
+      if (kind === "test") {
+        const { models } = await testProvider({ ...body(), id: conn?.id });
+        setMsg({ ok: true, text: `เชื่อมต่อได้ — พบ ${models.length} โมเดล` });
+        return;
+      }
+      if (kind === "delete" && conn) {
+        if (!window.confirm(`ลบการเชื่อมต่อ ‘${conn.name}’?`)) return;
+        await deleteProvider(conn.id);
+      } else if (conn) {
+        await updateProvider(conn.id, body());
+      } else {
+        await createProvider(body());
+      }
       await onSaved();
       onClose();
     } catch (e) {
-      setTest({ ok: false, text: e instanceof Error ? e.message : "บันทึกไม่สำเร็จ" });
+      setMsg({ ok: false, text: e instanceof Error ? e.message : "ไม่สำเร็จ" });
     } finally {
-      setSaving(false);
+      setBusy(null);
     }
   }
 
-  return (
-    <Modal title={`ตั้งค่า ${info.label}`} onClose={onClose}>
-      <div className="flex flex-col gap-4">
-        <div className="flex items-center gap-3 rounded-lg bg-accent-50 px-3 py-2.5">
-          <ProviderMark pid={pid} />
-          <p className="text-xs text-accent-600">{info.hint}</p>
+  if (!picked) {
+    return (
+      <Modal title="เพิ่มการเชื่อมต่อ" onClose={onClose} size="lg">
+        <p className="mb-3 text-sm text-accent-500">เลือกแม่แบบเพื่อกรอกให้อัตโนมัติ หรือเลือก ‘กำหนดเอง’ สำหรับผู้ให้บริการอื่นที่ใช้ API แบบ OpenAI</p>
+        <div className="grid gap-2 sm:grid-cols-3">
+          {presets.map((p) => (
+            <button
+              key={p.id}
+              type="button"
+              onClick={() => applyPreset(p)}
+              className="flex items-center gap-3 rounded-xl border border-accent-200 p-3 text-left transition-colors hover:border-brand-300 hover:bg-brand-50/40"
+            >
+              {p.id === "custom" ? (
+                <span className="flex h-9 w-9 items-center justify-center rounded-xl border border-dashed border-accent-300 text-accent-400"><Plus size={16} /></span>
+              ) : (
+                <Mark name={p.name} type={p.type} />
+              )}
+              <span className="min-w-0">
+                <span className="block truncate text-sm font-medium text-accent-900">{p.name}</span>
+                <span className="block truncate text-[11px] text-accent-400">{protocols[p.type]?.label}</span>
+              </span>
+            </button>
+          ))}
         </div>
-        {info.fields.includes("base_url") && (
+      </Modal>
+    );
+  }
+
+  return (
+    <Modal title={conn ? `แก้ไข ${conn.name}` : "เพิ่มการเชื่อมต่อ"} onClose={onClose}>
+      <div className="flex flex-col gap-4">
+        {!conn && (
+          <button type="button" onClick={() => setPicked(false)} className="flex w-fit items-center gap-1 text-xs font-medium text-accent-500 hover:text-accent-800">
+            <ArrowLeft size={13} /> เลือกแม่แบบอื่น
+          </button>
+        )}
+        <Field label="ชื่อการเชื่อมต่อ" hint="ตั้งให้จำง่าย เช่น ‘Ollama ห้อง Server’ หรือ ‘OpenRouter บัญชีบริษัท’">
+          <input className="field" value={name} onChange={(e) => setName(e.target.value)} placeholder="ชื่อ" />
+        </Field>
+        <Field label="รูปแบบ API" hint={proto?.hint}>
+          <select className="field" value={type} onChange={(e) => setType(e.target.value as ProtocolId)}>
+            {(Object.entries(protocols) as [ProtocolId, ProtocolInfo][]).map(([id, p]) => (
+              <option key={id} value={id}>{p.label}</option>
+            ))}
+          </select>
+        </Field>
+        {proto?.needs_url && (
           <Field label="ที่อยู่เซิร์ฟเวอร์ (URL)">
-            <input className="field" value={baseUrl} onChange={(e) => setBaseUrl(e.target.value)} placeholder={pid === "ollama" ? "http://192.168.1.10:11434" : "https://example.com/v1"} />
+            <input className="field" value={baseUrl} onChange={(e) => setBaseUrl(e.target.value)} placeholder={type === "ollama" ? "http://192.168.1.10:11434" : "https://example.com/v1"} />
           </Field>
         )}
-        {info.fields.includes("api_key") && (
-          <SecretField label="API key" mask={state.api_key} value={apiKey} onChange={setApiKey} optional={pid === "custom"} />
+        {proto?.key !== "none" && (
+          <SecretField label="API key" mask={conn?.api_key ?? NO_MASK} value={apiKey} onChange={setApiKey} optional={proto?.key === "optional"} />
         )}
-        {test && (
-          <p className={`flex items-start gap-1.5 rounded-lg px-3 py-2 text-xs ${test.ok ? "bg-brand-50 text-brand-800" : "bg-rose-50 text-rose-700"}`}>
-            {test.ok ? <CheckCircle2 size={14} className="mt-px shrink-0" /> : <XCircle size={14} className="mt-px shrink-0" />}
-            {test.text}
+        {msg && (
+          <p className={`flex items-start gap-1.5 rounded-lg px-3 py-2 text-xs ${msg.ok ? "bg-brand-50 text-brand-800" : "bg-rose-50 text-rose-700"}`}>
+            {msg.ok ? <CheckCircle2 size={14} className="mt-px shrink-0" /> : <XCircle size={14} className="mt-px shrink-0" />}
+            {msg.text}
           </p>
         )}
-        <div className="flex justify-end gap-2">
-          <Button variant="secondary" onClick={handleTest} disabled={testing || saving}>
-            {testing ? <Loader2 size={15} className="animate-spin" /> : <RefreshCw size={15} />} ทดสอบ
-          </Button>
-          <Button onClick={handleSave} disabled={saving || testing}>
-            {saving ? <Loader2 size={15} className="animate-spin" /> : <Save size={15} />} บันทึก
-          </Button>
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          {conn ? (
+            <Button variant="ghost" onClick={() => run("delete")} disabled={!!busy} className="text-rose-600 hover:bg-rose-50">
+              {busy === "delete" ? <Loader2 size={15} className="animate-spin" /> : <Trash2 size={15} />} ลบ
+            </Button>
+          ) : <span />}
+          <div className="flex gap-2">
+            <Button variant="secondary" onClick={() => run("test")} disabled={!!busy}>
+              {busy === "test" ? <Loader2 size={15} className="animate-spin" /> : <RefreshCw size={15} />} ทดสอบ
+            </Button>
+            <Button onClick={() => run("save")} disabled={!!busy || !name.trim()}>
+              {busy === "save" ? <Loader2 size={15} className="animate-spin" /> : <Save size={15} />} บันทึก
+            </Button>
+          </div>
         </div>
       </div>
     </Modal>
@@ -231,8 +288,7 @@ function ModelRow({
   title,
   description,
   value,
-  catalog,
-  providers,
+  connections,
   models,
   loadingModels,
   onProvider,
@@ -244,8 +300,7 @@ function ModelRow({
   title: string;
   description: string;
   value: { provider: string; model: string };
-  catalog: Record<string, ProviderCatalogItem>;
-  providers: NodeSettings["providers"];
+  connections: ProviderConn[];
   models: ProviderModel[] | undefined;
   loadingModels: boolean;
   onProvider: (pid: string) => void;
@@ -253,11 +308,12 @@ function ModelRow({
   onLoadModels: () => void;
   children?: ReactNode;
 }) {
-  const options = Object.entries(catalog).filter(([, c]) => c.roles.includes(role));
+  // rerank ใช้ endpoint /rerank แบบ OpenAI-compatible เท่านั้น
+  const options = role === "rerank" ? connections.filter((c) => c.type === "openai_compatible") : connections;
+  const current = connections.find((c) => c.id === value.provider);
   const listId = `models-${role}`;
   const suggested = (models ?? []).filter((m) => m.kinds.includes(role));
   const shown = suggested.length ? suggested : models ?? [];
-  const configured = providers[value.provider]?.configured;
 
   return (
     <div className="grid gap-4 border-b border-accent-100 py-5 first:pt-0 last:border-0 last:pb-0 lg:grid-cols-[220px_1fr]">
@@ -267,27 +323,24 @@ function ModelRow({
       </div>
       <div className="flex flex-col gap-3">
         <div className="grid gap-3 sm:grid-cols-2">
-          <Field label="ผู้ให้บริการ" hint={!configured ? <span className="text-amber-700">ยังไม่ได้ตั้งค่าผู้ให้บริการนี้ — กด ‘ตั้งค่า’ ที่การ์ดด้านบนก่อน</span> : undefined}>
-            <select className="field" value={value.provider} onChange={(e) => onProvider(e.target.value)}>
-              {options.map(([pid, c]) => (
-                <option key={pid} value={pid}>
-                  {c.label}{providers[pid]?.configured ? "" : " (ยังไม่ได้ตั้งค่า)"}
-                </option>
+          <Field
+            label="การเชื่อมต่อ"
+            hint={!current ? <span className="text-amber-700">เลือกการเชื่อมต่อ (เพิ่มได้ที่ส่วนด้านบน)</span> : !current.configured ? <span className="text-amber-700">การเชื่อมต่อนี้ยังตั้งค่าไม่ครบ</span> : undefined}
+          >
+            <select className="field" value={current ? value.provider : ""} onChange={(e) => onProvider(e.target.value)}>
+              {!current && <option value="">— เลือก —</option>}
+              {options.map((c) => (
+                <option key={c.id} value={c.id}>{c.name}{c.configured ? "" : " (ยังตั้งค่าไม่ครบ)"}</option>
               ))}
             </select>
           </Field>
-          <Field
-            label="โมเดล"
-            hint={
-              models ? `พบ ${shown.length} โมเดล — เลือกจากรายการหรือพิมพ์ชื่อเองได้` : "กดปุ่มรีเฟรชเพื่อดึงรายชื่อโมเดลจากผู้ให้บริการ"
-            }
-          >
+          <Field label="โมเดล" hint={models ? `พบ ${shown.length} โมเดล — เลือกจากรายการหรือพิมพ์ชื่อเองได้` : "กดปุ่มรีเฟรชเพื่อดึงรายชื่อโมเดล"}>
             <div className="flex gap-2">
               <input className="field" list={listId} value={value.model} onChange={(e) => onModel(e.target.value)} placeholder="ชื่อโมเดล" />
               <button
                 type="button"
                 onClick={onLoadModels}
-                disabled={!configured || loadingModels}
+                disabled={!current?.configured || loadingModels}
                 title="ดึงรายชื่อโมเดล"
                 className="flex h-[38px] w-10 shrink-0 items-center justify-center rounded-lg border border-accent-200 text-accent-500 hover:bg-accent-50 disabled:opacity-40"
               >
@@ -295,9 +348,7 @@ function ModelRow({
               </button>
             </div>
             <datalist id={listId}>
-              {shown.map((m) => (
-                <option key={m.id} value={m.id} />
-              ))}
+              {shown.map((m) => <option key={m.id} value={m.id} />)}
             </datalist>
           </Field>
         </div>
@@ -311,11 +362,12 @@ function ModelRow({
 
 export default function SettingsPage() {
   const [settings, setSettings] = useState<NodeSettings | null>(null);
-  const [catalog, setCatalog] = useState<Record<string, ProviderCatalogItem>>({});
+  const [protocols, setProtocols] = useState<Record<ProtocolId, ProtocolInfo> | null>(null);
+  const [presets, setPresets] = useState<ProviderPreset[]>([]);
   const [kbCount, setKbCount] = useState(0);
   const [error, setError] = useState<string | null>(null);
 
-  const [editing, setEditing] = useState<string | null>(null);
+  const [editing, setEditing] = useState<ProviderConn | "new" | null>(null);
   const [models, setModels] = useState<ModelsSettings | null>(null);
   const [modelLists, setModelLists] = useState<Record<string, ProviderModel[]>>({});
   const [loadingList, setLoadingList] = useState<string | null>(null);
@@ -338,7 +390,8 @@ export default function SettingsPage() {
   const load = useCallback(async () => {
     const res = await getSettings();
     setSettings(res.settings);
-    setCatalog(res.catalog);
+    setProtocols(res.protocols);
+    setPresets(res.presets);
     setKbCount(res.kb_count);
     setModels(res.settings.models);
     setVectorUrl(res.settings.vector.url);
@@ -352,6 +405,7 @@ export default function SettingsPage() {
   }, [load]);
 
   const loadModels = useCallback(async (pid: string) => {
+    if (!pid) return;
     setLoadingList(pid);
     try {
       const { models } = await listProviderModels(pid);
@@ -363,12 +417,12 @@ export default function SettingsPage() {
     }
   }, []);
 
-  // ดึงรายชื่อโมเดลของผู้ให้บริการที่ถูกเลือกอยู่ให้อัตโนมัติ (เฉพาะที่ตั้งค่าแล้ว)
+  // ดึงรายชื่อโมเดลของการเชื่อมต่อที่ถูกเลือกอยู่ให้อัตโนมัติ (เฉพาะที่ตั้งค่าครบ)
   useEffect(() => {
     if (!settings || !models) return;
-    const pids = new Set([models.llm.provider, models.embedding.provider, models.rerank.provider]);
-    pids.forEach((pid) => {
-      if (settings.providers[pid]?.configured && !modelLists[pid]) loadModels(pid);
+    new Set([models.llm.provider, models.embedding.provider, models.rerank.provider]).forEach((pid) => {
+      const conn = settings.providers.find((c) => c.id === pid);
+      if (conn?.configured && !modelLists[pid]) loadModels(pid);
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [settings, models?.llm.provider, models?.embedding.provider, models?.rerank.provider]);
@@ -379,11 +433,15 @@ export default function SettingsPage() {
     [models, savedEmbedding, kbCount]
   );
 
-  if (!settings || !models) {
+  if (!settings || !models || !protocols) {
     return error ? <ErrorNote message={error} /> : (
       <div className="flex items-center gap-2 text-sm text-accent-400"><Loader2 size={16} className="animate-spin" /> กำลังโหลด...</div>
     );
   }
+
+  const connections = settings.providers;
+  const usedBy = (pid: string) =>
+    (["llm", "embedding", "rerank"] as ModelRole[]).filter((r) => models[r].provider === pid && (r !== "rerank" || models.rerank.enabled));
 
   function patchModel<R extends ModelRole>(role: R, values: Partial<ModelsSettings[R]>) {
     setModels((m) => (m ? { ...m, [role]: { ...m[role], ...values } } : m));
@@ -451,13 +509,13 @@ export default function SettingsPage() {
   }
 
   const detectedDim = typeof dimCheck?.dim === "number" ? dimCheck.dim : null;
-  const lic = check?.license;
+  const ROLE_LABEL: Record<ModelRole, string> = { llm: "LLM", embedding: "Embedding", rerank: "Rerank" };
 
   return (
     <div>
       <PageHeader
         title="การเชื่อมต่อ AI"
-        description="ตั้งค่าผู้ให้บริการครั้งเดียว แล้วเลือกโมเดลที่ใช้ในแต่ละหน้าที่ — ทุกอย่างมีผลทันทีโดยไม่ต้องรีสตาร์ต และ key ถูกเข้ารหัสก่อนเก็บ"
+        description="เพิ่มการเชื่อมต่อกับผู้ให้บริการ AI เจ้าไหนก็ได้ แล้วเลือกโมเดลที่ใช้ในแต่ละหน้าที่ — มีผลทันทีโดยไม่ต้องรีสตาร์ต และ key ถูกเข้ารหัสก่อนเก็บ"
         actions={
           <Button variant="secondary" onClick={handleCheckAll} disabled={checking}>
             {checking ? <Loader2 size={15} className="animate-spin" /> : <RefreshCw size={15} />} ตรวจทั้งระบบ
@@ -470,7 +528,7 @@ export default function SettingsPage() {
         <div className="mb-5 grid gap-2 rounded-xl border border-accent-200 bg-white p-4 sm:grid-cols-3 lg:grid-cols-6">
           {([
             ["central", check.central],
-            ["license", lic],
+            ["license", check.license],
             ["LLM", check.llm],
             ["Embedding", check.embedding],
             ["Qdrant", check.vector],
@@ -485,44 +543,46 @@ export default function SettingsPage() {
       )}
 
       <div className="flex flex-col gap-5">
-        {/* 1) ผู้ให้บริการ */}
-        <Panel icon={<Cpu size={18} />} title="ผู้ให้บริการโมเดล" description="ใส่ key หรือที่อยู่เซิร์ฟเวอร์ของแต่ละเจ้า — ตั้งเฉพาะเจ้าที่ใช้ก็พอ">
+        {/* 1) การเชื่อมต่อ */}
+        <Panel icon={<Cpu size={18} />} title="การเชื่อมต่อผู้ให้บริการ" description="ต่อได้ทุกเจ้าที่ใช้ API แบบ OpenAI รวมถึง Gemini และ Ollama — เพิ่มได้ไม่จำกัด เจ้าเดียวกันหลายบัญชีก็ได้">
           <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
-            {Object.entries(catalog).map(([pid, info]) => {
-              const st = settings.providers[pid];
+            {connections.map((c) => {
+              const roles = usedBy(c.id);
               return (
-                <div key={pid} className={`flex flex-col gap-3 rounded-xl border p-4 transition-colors ${st?.configured ? "border-brand-200 bg-brand-50/30" : "border-accent-200 bg-white"}`}>
+                <div key={c.id} className={`flex flex-col gap-3 rounded-xl border p-4 ${c.configured ? "border-accent-200 bg-white" : "border-amber-200 bg-amber-50/40"}`}>
                   <div className="flex items-start gap-3">
-                    <ProviderMark pid={pid} size="lg" />
+                    <Mark name={c.name} type={c.type} size="lg" />
                     <div className="min-w-0 flex-1">
-                      <p className="truncate text-sm font-semibold text-accent-900">{info.label}</p>
-                      <div className="mt-1 flex flex-wrap gap-1">
-                        {info.roles.map((r) => (
-                          <span key={r} className="rounded bg-accent-100 px-1.5 py-0.5 text-[10px] font-medium text-accent-600">{ROLE_LABEL[r]}</span>
-                        ))}
-                      </div>
+                      <p className="truncate text-sm font-semibold text-accent-900">{c.name}</p>
+                      <p className="truncate text-[11px] text-accent-400">{protocols[c.type]?.label}</p>
                     </div>
                   </div>
-                  <div className="flex items-center justify-between gap-2">
-                    {st?.configured ? (
-                      <span className="flex min-w-0 items-center gap-1 text-xs text-brand-700">
-                        <CheckCircle2 size={13} className="shrink-0" />
-                        <span className="truncate">{info.fields.includes("base_url") ? st.base_url : `key ${st.api_key.hint}`}</span>
-                      </span>
-                    ) : (
-                      <span className="text-xs text-accent-400">ยังไม่ได้ตั้งค่า</span>
-                    )}
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div className="flex min-w-0 flex-wrap gap-1">
+                      {roles.length ? roles.map((r) => (
+                        <span key={r} className="rounded bg-brand-50 px-1.5 py-0.5 text-[10px] font-medium text-brand-700">ใช้กับ {ROLE_LABEL[r]}</span>
+                      )) : (
+                        <span className={`text-xs ${c.configured ? "text-accent-400" : "text-amber-700"}`}>{c.configured ? "ยังไม่ได้ใช้" : "ตั้งค่ายังไม่ครบ"}</span>
+                      )}
+                    </div>
                     <button
                       type="button"
-                      onClick={() => setEditing(pid)}
+                      onClick={() => setEditing(c)}
                       className="flex shrink-0 items-center gap-1 rounded-lg border border-accent-200 bg-white px-2.5 py-1.5 text-xs font-medium text-accent-700 hover:border-brand-300 hover:text-brand-700"
                     >
-                      <Settings2 size={13} /> {st?.configured ? "แก้ไข" : "ตั้งค่า"}
+                      <Settings2 size={13} /> แก้ไข
                     </button>
                   </div>
                 </div>
               );
             })}
+            <button
+              type="button"
+              onClick={() => setEditing("new")}
+              className="flex min-h-[112px] flex-col items-center justify-center gap-1.5 rounded-xl border border-dashed border-accent-300 text-sm font-medium text-accent-500 transition-colors hover:border-brand-400 hover:bg-brand-50/30 hover:text-brand-700"
+            >
+              <Plus size={18} /> เพิ่มการเชื่อมต่อ
+            </button>
           </div>
         </Panel>
 
@@ -530,7 +590,7 @@ export default function SettingsPage() {
         <Panel
           icon={<Server size={18} />}
           title="โมเดลที่ใช้ในระบบ"
-          description="เลือกผู้ให้บริการและโมเดลสำหรับแต่ละหน้าที่"
+          description="เลือกการเชื่อมต่อและโมเดลสำหรับแต่ละหน้าที่"
           action={
             <div className="flex items-center gap-3">
               {modelsNotice && <span className="flex items-center gap-1 text-xs text-brand-700"><CheckCircle2 size={14} /> {modelsNotice}</span>}
@@ -545,8 +605,7 @@ export default function SettingsPage() {
             title="LLM (ตอบคำถาม)"
             description="อ่าน context แล้วตอบผู้ใช้ และช่วยจัดข้อมูลตอนอัปโหลดเอกสาร"
             value={models.llm}
-            catalog={catalog}
-            providers={settings.providers}
+            connections={connections}
             models={modelLists[models.llm.provider]}
             loadingModels={loadingList === models.llm.provider}
             onProvider={(pid) => patchModel("llm", { provider: pid, model: "" })}
@@ -559,8 +618,7 @@ export default function SettingsPage() {
             title="Embedding (ค้นหาเอกสาร)"
             description="แปลงเอกสารเป็นเวกเตอร์ — KB ผูกกับโมเดลที่ใช้ตอนสร้าง"
             value={models.embedding}
-            catalog={catalog}
-            providers={settings.providers}
+            connections={connections}
             models={modelLists[models.embedding.provider]}
             loadingModels={loadingList === models.embedding.provider}
             onProvider={(pid) => patchModel("embedding", { provider: pid, model: "" })}
@@ -577,15 +635,13 @@ export default function SettingsPage() {
                 </div>
               </Field>
               <div className="flex items-end pb-2">
-                {dimCheck && (
-                  detectedDim && detectedDim !== Number(models.embedding.dim) ? (
-                    <button type="button" onClick={() => patchModel("embedding", { dim: detectedDim })} className="text-left text-xs font-medium text-amber-700 underline">
-                      โมเดลนี้ให้ {detectedDim} มิติ — กดเพื่อใช้ค่านี้
-                    </button>
-                  ) : (
-                    <Result item={dimCheck} okText={detectedDim ? `ถูกต้อง · ${detectedDim} มิติ` : undefined} />
-                  )
-                )}
+                {dimCheck && (detectedDim && detectedDim !== Number(models.embedding.dim) ? (
+                  <button type="button" onClick={() => patchModel("embedding", { dim: detectedDim })} className="text-left text-xs font-medium text-amber-700 underline">
+                    โมเดลนี้ให้ {detectedDim} มิติ — กดเพื่อใช้ค่านี้
+                  </button>
+                ) : (
+                  <Result item={dimCheck} okText={detectedDim ? `ถูกต้อง · ${detectedDim} มิติ` : undefined} />
+                ))}
               </div>
             </div>
             {kbCount > 0 && (
@@ -601,10 +657,9 @@ export default function SettingsPage() {
           <ModelRow
             role="rerank"
             title="Rerank (ไม่บังคับ)"
-            description="จัดอันดับผลค้นหาใหม่ให้แม่นขึ้น ใช้กับบอทที่เปิด ‘ใช้ Rerank’"
+            description="จัดอันดับผลค้นหาใหม่ให้แม่นขึ้น ใช้กับบอทที่เปิด ‘ใช้ Rerank’ (ต้องเป็นการเชื่อมต่อที่มี endpoint /rerank เช่น SiliconFlow)"
             value={models.rerank}
-            catalog={catalog}
-            providers={settings.providers}
+            connections={connections}
             models={modelLists[models.rerank.provider]}
             loadingModels={loadingList === models.rerank.provider}
             onProvider={(pid) => patchModel("rerank", { provider: pid, model: "" })}
@@ -651,19 +706,16 @@ export default function SettingsPage() {
         </Panel>
       </div>
 
-      {editing && catalog[editing] && (
-        <ProviderModal
-          pid={editing}
-          info={catalog[editing]}
-          state={settings.providers[editing]}
+      {editing && (
+        <ConnectionModal
+          conn={editing === "new" ? null : editing}
+          protocols={protocols}
+          presets={presets}
           onClose={() => setEditing(null)}
           onSaved={async () => {
+            const id = editing === "new" ? null : editing.id;
             await load();
-            setModelLists((m) => {
-              const next = { ...m };
-              delete next[editing];
-              return next;
-            });
+            if (id) setModelLists((m) => { const n = { ...m }; delete n[id]; return n; });
           }}
         />
       )}
@@ -672,9 +724,7 @@ export default function SettingsPage() {
         <Modal title="ยืนยันการเปลี่ยน embedding" onClose={() => setConfirm(null)}>
           <div className="flex flex-col gap-4 text-sm text-accent-700">
             <p>KB ต่อไปนี้สร้างด้วย embedding ตัวเดิม หลังเปลี่ยนแล้วจะค้นหาไม่ได้และอัปโหลดเพิ่มไม่ได้ ต้องสร้าง KB ใหม่แล้วอัปโหลดเอกสารใหม่:</p>
-            <ul className="list-disc space-y-1 pl-5">
-              {confirm.map((n) => <li key={n}>{n}</li>)}
-            </ul>
+            <ul className="list-disc space-y-1 pl-5">{confirm.map((n) => <li key={n}>{n}</li>)}</ul>
             <div className="flex justify-end gap-2">
               <Button variant="secondary" onClick={() => setConfirm(null)}>ยกเลิก</Button>
               <Button onClick={() => handleSaveModels(true)} disabled={savingModels}>เปลี่ยน embedding</Button>

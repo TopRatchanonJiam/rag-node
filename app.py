@@ -87,9 +87,16 @@ async def basic_auth(request: Request, call_next):
 async def no_cache_html(request: Request, call_next):
     """ห้ามเบราว์เซอร์จำหน้า HTML/API — ไม่งั้นหลังอัปเดตเวอร์ชันจะยังเห็นหน้าเก่าจนกว่าจะกด Ctrl+F5
     (ไฟล์ใน /_next/static มีชื่อเปลี่ยนทุก build อยู่แล้ว จึง cache ได้ตามปกติ)"""
+    static_asset = request.url.path.startswith("/_next/static/")
+    if not static_asset:
+        # ตัด header ขอ 304 ทิ้ง — StaticFiles ตัดสิน "ไม่เปลี่ยน" จากเวลาไฟล์ ซึ่งผิดได้กับไฟล์ที่ build ใน
+        # Docker (เคยเจอ: เบราว์เซอร์ได้ 304 แล้วแสดงหน้า /chat/ รุ่นเก่าค้าง แม้กดรีเฟรช)
+        request.scope["headers"] = [
+            (k, v) for k, v in request.scope["headers"] if k not in (b"if-none-match", b"if-modified-since")
+        ]
     response = await call_next(request)
-    if not request.url.path.startswith("/_next/static/"):
-        response.headers["Cache-Control"] = "no-cache"
+    if not static_asset:
+        response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
     return response
 
 

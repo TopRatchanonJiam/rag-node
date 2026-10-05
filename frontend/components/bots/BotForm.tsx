@@ -3,7 +3,7 @@
 import { useState, type KeyboardEvent } from "react";
 import { Loader2, Plus, X } from "lucide-react";
 import { Button } from "@/components/ui/Button";
-import type { KnowledgeBase, SkillSet } from "@/lib/types";
+import type { KnowledgeBase, RegistryModel, SkillSet } from "@/lib/types";
 
 export const QUICK_CHAT_MAX_TAGS = 5;
 export const QUICK_CHAT_MAX_TAG_LENGTH = 100;
@@ -17,17 +17,21 @@ export interface BotFormValues {
   use_rerank: boolean;
   quick_chat_enabled: boolean;
   quick_chat_tags: string[];
+  llm_model_id: string;
+  rerank_model_id: string;
 }
 
 export function BotForm({
   knowledgeBases,
   skillSets,
+  models = [],
   initial,
   submitLabel,
   onSubmit,
 }: {
   knowledgeBases: KnowledgeBase[];
   skillSets: SkillSet[];
+  models?: RegistryModel[];
   initial?: Partial<BotFormValues>;
   submitLabel: string;
   onSubmit: (values: BotFormValues) => Promise<void>;
@@ -41,6 +45,12 @@ export function BotForm({
   const [quickChatEnabled, setQuickChatEnabled] = useState(initial?.quick_chat_enabled ?? false);
   const [quickChatTags, setQuickChatTags] = useState<string[]>(initial?.quick_chat_tags ?? []);
   const [tagInput, setTagInput] = useState("");
+  const [llmModelId, setLlmModelId] = useState(initial?.llm_model_id ?? "");
+  const [rerankModelId, setRerankModelId] = useState(initial?.rerank_model_id ?? "");
+  const llms = models.filter((m) => m.kind === "llm");
+  const reranks = models.filter((m) => m.kind === "rerank");
+  const defaultLlm = llms.find((m) => m.is_default);
+  const defaultRerank = reranks.find((m) => m.is_default);
   const [submitting, setSubmitting] = useState(false);
 
   function toggleKb(id: string) {
@@ -82,6 +92,8 @@ export function BotForm({
         use_rerank: useRerank,
         quick_chat_enabled: quickChatEnabled,
         quick_chat_tags: quickChatTags,
+        llm_model_id: llmModelId,
+        rerank_model_id: rerankModelId,
       });
     } finally {
       setSubmitting(false);
@@ -158,6 +170,20 @@ export function BotForm({
         )}
       </div>
 
+      <div>
+        <label className="mb-1 block text-xs font-medium text-slate-500">LLM ที่ใช้ตอบ</label>
+        <select
+          value={llmModelId}
+          onChange={(e) => setLlmModelId(e.target.value)}
+          className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm focus:border-brand-400 focus:outline-none focus:ring-1 focus:ring-brand-400"
+        >
+          <option value="">ค่าเริ่มต้น{defaultLlm ? ` (${defaultLlm.name})` : ""}</option>
+          {llms.map((m) => (
+            <option key={m.id} value={m.id}>{m.name} — {m.provider_name}</option>
+          ))}
+        </select>
+      </div>
+
       <label className="flex items-center gap-2 rounded-md px-1.5 py-1 text-sm hover:bg-slate-50">
         <input
           type="checkbox"
@@ -166,8 +192,26 @@ export function BotForm({
           className="h-4 w-4 rounded border-slate-300 text-brand-600 focus:ring-brand-400"
         />
         <span className="text-slate-700">ใช้ Rerank</span>
-        <span className="text-xs text-slate-400">(จัดอันดับ chunk ที่ค้นเจอใหม่ด้วย SiliconFlow ก่อนตอบ — แม่นขึ้นแต่ช้าขึ้น)</span>
+        <span className="text-xs text-slate-400">(จัดอันดับ chunk ที่ค้นเจอใหม่ก่อนตอบ — แม่นขึ้นแต่ช้าขึ้น)</span>
       </label>
+      {useRerank && (
+        <div className="-mt-1 pl-7">
+          {reranks.length === 0 ? (
+            <p className="text-xs text-amber-700">ยังไม่มีโมเดล Rerank ในคลัง — เพิ่มที่หลังบ้าน → การเชื่อมต่อ AI</p>
+          ) : (
+            <select
+              value={rerankModelId}
+              onChange={(e) => setRerankModelId(e.target.value)}
+              className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm focus:border-brand-400 focus:outline-none focus:ring-1 focus:ring-brand-400"
+            >
+              <option value="">Rerank ค่าเริ่มต้น{defaultRerank ? ` (${defaultRerank.name})` : ""}</option>
+              {reranks.map((m) => (
+                <option key={m.id} value={m.id}>{m.name} — {m.provider_name}</option>
+              ))}
+            </select>
+          )}
+        </div>
+      )}
 
       <div className="rounded-lg border border-slate-200 p-3">
         <label className="flex items-center gap-2 rounded-md px-1.5 py-1 text-sm hover:bg-slate-50">

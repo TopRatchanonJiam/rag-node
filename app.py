@@ -195,24 +195,29 @@ def migrate_legacy_state() -> None:
 
 
 # ══════════════════════════════════════════════
-# Settings — key เข้ารหัส, แก้ได้จากหน้าเว็บ, มีผลทันที
+# Settings — การเชื่อมต่อ + คลังโมเดล (key เข้ารหัส, แก้จากหน้าเว็บ, มีผลทันที)
 # ══════════════════════════════════════════════
+#
+# providers  = การเชื่อมต่อที่ผู้ใช้เพิ่มเอง {id: {name, type, base_url, api_key}}
+# registry   = คลังโมเดล {id: {name, kind (llm|embedding|rerank), provider, model, dim?}} — เพิ่มได้หลายตัวต่อประเภท
+# defaults   = ค่าเริ่มต้นต่อประเภท {llm: id, embedding: id, rerank: id}
+# การเลือกใช้จริงอยู่ที่งาน: KB เลือก embedding ตอนสร้าง (ผูกถาวร), บอทเลือก LLM/rerank (ว่าง = ค่าเริ่มต้น)
 
-# แบบเดียวกับ Dify: "providers" = key/URL ของแต่ละผู้ให้บริการ (ตั้งครั้งเดียว), "models" = เลือกว่า
-# LLM / Embedding / Rerank ใช้ผู้ให้บริการไหนกับโมเดลอะไร — เปลี่ยนโมเดลได้โดยไม่ต้องกรอก key ซ้ำ
-SECTIONS = ("providers", "models", "vector", "central")
+SECTIONS = ("providers", "registry", "defaults", "vector", "central")
+LEGACY_SECTIONS = ("llm", "embedding", "rerank", "models")
+KINDS = ("llm", "embedding", "rerank")
+KIND_LABEL = {"llm": "LLM", "embedding": "Embedding", "rerank": "Rerank"}
 SECRET_FIELDS = {"api_key", "license_key"}
 _settings_cache: dict | None = None
 
-# รูปแบบ API ที่ระบบคุยได้ (ต้องมีในโค้ด เพราะเป็นวิธีเรียกโมเดล) — ผู้ให้บริการแทบทุกเจ้าใช้แบบ OpenAI ได้
+# รูปแบบ API ที่ระบบคุยได้ (ระบบเดาจาก URL ให้เอง) — ผู้ให้บริการแทบทุกเจ้าใช้แบบ OpenAI ได้
 PROTOCOLS: dict[str, dict] = {
-    "openai_compatible": {"label": "OpenAI-compatible API", "needs_url": True, "key": "optional",
-                          "hint": "ใช้ได้กับผู้ให้บริการส่วนใหญ่ เช่น OpenAI, OpenRouter, Groq, DeepSeek, vLLM, LM Studio — URL ปกติลงท้ายด้วย /v1"},
-    "google": {"label": "Google Gemini API", "needs_url": False, "key": "required", "hint": "สร้าง key ที่ aistudio.google.com"},
-    "ollama": {"label": "Ollama", "needs_url": True, "key": "none", "hint": "เช่น http://192.168.1.10:11434 (ไม่ต้องใส่ /v1)"},
+    "openai_compatible": {"label": "OpenAI-compatible API"},
+    "google": {"label": "Google Gemini API"},
+    "ollama": {"label": "Ollama"},
 }
 
-# สำหรับแปลงการตั้งค่ารุ่นก่อนที่ผูก id ตายตัว
+# สำหรับแปลงการตั้งค่ารุ่นแรก ๆ ที่ผูก id ตายตัว
 _LEGACY_PROVIDERS = {
     "google": ("Google Gemini", "google", ""),
     "openai": ("OpenAI", "openai_compatible", "https://api.openai.com/v1"),
@@ -253,6 +258,12 @@ def _env(name: str, default: str = "") -> str:
     return (os.environ.get(name) or default).strip()
 
 
+def _new_id() -> str:
+    return uuid.uuid4().hex[:12]
+
+
+# ── แปลงการตั้งค่ารุ่นก่อน ────────────────────────────
+
 def _provider_id_for(cfg: dict) -> str:
     provider = (cfg.get("provider") or "").lower()
     base = (cfg.get("base_url") or "").lower()
@@ -266,10 +277,10 @@ def _provider_id_for(cfg: dict) -> str:
 
 
 def _from_role_schema(old: dict) -> dict:
-    """แปลงการตั้งค่ารุ่นก่อน (llm/embedding/rerank แยกกันพร้อม key ในตัว) เป็น providers + models"""
+    """รุ่นแรก (llm/embedding/rerank แยกกันพร้อม key ในตัว) → providers + models (รุ่นที่สอง)"""
     providers = {pid: {"api_key": "", "base_url": ""} for pid in _LEGACY_PROVIDERS}
     models: dict = {}
-    for role in ("llm", "embedding", "rerank"):
+    for role in KINDS:
         cfg = old.get(role) or {}
         pid = _provider_id_for(cfg) if (cfg.get("base_url") or role != "rerank") else "siliconflow"
         if role == "rerank" and pid not in ("siliconflow", "custom"):
@@ -280,32 +291,84 @@ def _from_role_schema(old: dict) -> dict:
             providers[pid]["base_url"] = cfg["base_url"]
         models[role] = {"provider": pid, "model": cfg.get("model", "")}
     models["embedding"]["dim"] = int((old.get("embedding") or {}).get("dim") or 0)
-    models["rerank"]["enabled"] = bool((old.get("rerank") or {}).get("enabled"))
     return {"providers": providers, "models": models,
             "vector": old.get("vector") or {"url": "", "api_key": ""},
             "central": old.get("central") or {"url": "", "license_key": ""}}
 
 
+def _upgrade_providers(providers: dict, used: set) -> dict:
+    """providers รุ่นที่ผูก id ตายตัว (ไม่มี type) → การเชื่อมต่อแบบ dynamic — คง id เดิมไว้"""
+    out = {}
+    for pid, prov in providers.items():
+        if "type" in prov:
+            out[pid] = prov
+            continue
+        name, typ, base = _LEGACY_PROVIDERS.get(pid, (pid, "openai_compatible", ""))
+        if not (prov.get("api_key") or prov.get("base_url")) and pid not in used:
+            continue
+        out[pid] = {"name": name, "type": typ, "base_url": prov.get("base_url") or base, "api_key": prov.get("api_key", "")}
+    return out
+
+
+def _models_to_registry(models: dict) -> tuple[dict, dict]:
+    """models รุ่นที่สอง (1 ตัวต่อหน้าที่) → คลังโมเดล + ค่าเริ่มต้น"""
+    registry: dict = {}
+    defaults: dict = {k: None for k in KINDS}
+    for kind in KINDS:
+        m = models.get(kind) or {}
+        if not m.get("model"):
+            continue
+        mid = f"m_{_new_id()[:8]}"
+        entry = {"name": m["model"], "kind": kind, "provider": m.get("provider", ""), "model": m["model"]}
+        if kind == "embedding":
+            entry["dim"] = int(m.get("dim") or 0)
+        registry[mid] = entry
+        defaults[kind] = mid
+    return registry, defaults
+
+
+def _to_current(old_rows: dict) -> dict:
+    """รับการตั้งค่ารุ่นใดก็ได้ (ถอดรหัสแล้ว) → รูปแบบปัจจุบัน"""
+    if "llm" in old_rows:
+        old_rows = _from_role_schema(old_rows)
+    if "models" in old_rows and "registry" not in old_rows:
+        registry, defaults = _models_to_registry(old_rows["models"])
+    else:
+        registry, defaults = old_rows.get("registry", {}), old_rows.get("defaults", {})
+    used = {e.get("provider") for e in registry.values()}
+    return {
+        "providers": _upgrade_providers(old_rows.get("providers", {}), used),
+        "registry": registry,
+        "defaults": {k: defaults.get(k) for k in KINDS},
+        "vector": old_rows.get("vector") or {"url": "", "api_key": ""},
+        "central": old_rows.get("central") or {"url": "", "license_key": ""},
+    }
+
+
 def _defaults_from_env() -> dict:
     """ค่าเริ่มต้นครั้งแรกจาก .env — node ที่ติดตั้งไว้แล้วจึงย้ายมาใช้หน้าตั้งค่าได้โดยไม่ต้องกรอกใหม่"""
-    return _from_role_schema({
+    return _to_current({
         "llm": {"provider": _env("LLM_PROVIDER", "google"), "model": _env("LLM_MODEL", "gemini-2.5-flash"),
                 "api_key": _env("LLM_API_KEY"), "base_url": _env("LLM_BASE_URL")},
         "embedding": {"provider": _env("EMBED_PROVIDER", "openai_compatible"),
                       "model": _env("EMBED_MODEL", "Qwen/Qwen3-Embedding-4B"),
                       "api_key": _env("EMBED_API_KEY"), "base_url": _env("EMBED_BASE_URL", "https://api.siliconflow.com/v1"),
                       "dim": int(_env("EMBED_DIM", "2560") or 0)},
-        "rerank": {"enabled": bool(_env("RERANK_API_KEY")), "api_key": _env("RERANK_API_KEY"),
-                   "model": _env("RERANK_MODEL", "Qwen/Qwen3-Reranker-0.6B"),
+        "rerank": {"api_key": _env("RERANK_API_KEY"),
+                   "model": _env("RERANK_MODEL", "Qwen/Qwen3-Reranker-0.6B") if _env("RERANK_API_KEY") else "",
                    "base_url": _env("RERANK_BASE_URL", "https://api.siliconflow.com/v1")},
         "vector": {"url": _env("QDRANT_URL"), "api_key": _env("QDRANT_API_KEY")},
         "central": {"url": _env("CENTRAL_URL", "http://127.0.0.1:9000"), "license_key": _env("LICENSE_KEY")},
     })
 
 
+# ── อ่าน/เขียน ───────────────────────────────────────
+
 def _secret_map(section: str, values: dict, fn) -> dict:
     if section == "providers":
         return {pid: {k: (fn(v) if k in SECRET_FIELDS else v) for k, v in prov.items()} for pid, prov in values.items()}
+    if section in ("registry", "defaults", "models"):
+        return values
     return {k: (fn(v) if k in SECRET_FIELDS else v) for k, v in values.items()}
 
 
@@ -315,7 +378,7 @@ def _write_settings(settings: dict) -> None:
         for section in SECTIONS:
             c.execute("INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
                       (section, json.dumps(_secret_map(section, settings[section], _enc), ensure_ascii=False)))
-        c.execute("DELETE FROM settings WHERE key IN ('llm', 'embedding', 'rerank')")
+        c.execute(f"DELETE FROM settings WHERE key IN ({','.join('?' * len(LEGACY_SECTIONS))})", LEGACY_SECTIONS)
     _settings_cache = None
 
 
@@ -329,19 +392,12 @@ def load_settings() -> dict:
     if not rows:
         _write_settings(_defaults_from_env())
         return load_settings()
-    if "llm" in rows:  # รูปแบบรุ่นก่อน → แปลงครั้งเดียว
-        old = {k: _secret_map(k, json.loads(v), _dec) for k, v in rows.items() if k != "providers"}
-        _write_settings(_from_role_schema(old))
+    decoded = {k: _secret_map(k, json.loads(v), _dec) for k, v in rows.items()}
+    if any(k in decoded for k in LEGACY_SECTIONS) or "registry" not in decoded:
+        _write_settings(_to_current(decoded))
         return load_settings()
-    settings = {s: _secret_map(s, json.loads(rows.get(s, "{}")), _dec) for s in SECTIONS}
-    if any("type" not in prov for prov in settings["providers"].values()):
-        _upgrade_providers(settings)
-        _write_settings(settings)
-        return load_settings()
-    models = settings["models"]
-    models.setdefault("llm", {"provider": "google", "model": ""})
-    models.setdefault("embedding", {"provider": "siliconflow", "model": "", "dim": 0})
-    models.setdefault("rerank", {"provider": "siliconflow", "model": "", "enabled": False})
+    settings = {s: decoded.get(s, {}) for s in SECTIONS}
+    settings["defaults"] = {k: settings["defaults"].get(k) for k in KINDS}
     for section, secret in (("vector", "api_key"), ("central", "license_key")):
         settings[section].setdefault("url", "")
         settings[section].setdefault(secret, "")
@@ -349,30 +405,38 @@ def load_settings() -> dict:
     return settings
 
 
+def ensure_kb_embeddings() -> None:
+    """KB รุ่นก่อนเก็บแค่ชื่อโมเดล embedding — ผูกเข้ากับรายการในคลังโมเดล (สร้างให้ถ้ายังไม่มี)"""
+    s = load_settings()
+    registry = dict(s["registry"])
+    changed = False
+    for kb in db_all("kbs"):
+        emb = kb.get("embedding") or {}
+        if emb.get("model_id") in registry:
+            continue
+        mid = next((i for i, e in registry.items() if e["kind"] == "embedding"
+                    and e["model"] == emb.get("model") and int(e.get("dim") or 0) == int(emb.get("dim") or 0)), None)
+        if not mid:
+            default_emb = registry.get(s["defaults"].get("embedding") or "") or {}
+            provider = emb.get("provider") if emb.get("provider") in s["providers"] else default_emb.get("provider", "")
+            mid = f"m_{_new_id()[:8]}"
+            registry[mid] = {"name": emb.get("model") or mid, "kind": "embedding", "provider": provider,
+                             "model": emb.get("model", ""), "dim": int(emb.get("dim") or 0)}
+            changed = True
+        kb["embedding"] = {"model_id": mid, "model": registry[mid]["model"], "dim": int(registry[mid].get("dim") or 0)}
+        db_put("kbs", kb["id"], kb)
+    if changed:
+        _write_settings({**s, "registry": registry})
+
+
+# ── ส่งออกให้หน้าเว็บ (ไม่มี key) ─────────────────────
+
 def _mask(value: str) -> dict:
     return {"set": bool(value), "hint": f"••••{value[-4:]}" if len(value) >= 8 else ("••••" if value else "")}
 
 
-def _upgrade_providers(settings: dict) -> None:
-    """providers รุ่นก่อน (id ตายตัว ไม่มี type) → การเชื่อมต่อแบบ dynamic — คง id เดิมไว้ให้ models อ้างถึงได้"""
-    used = {m.get("provider") for m in settings["models"].values()}
-    out = {}
-    for pid, prov in settings["providers"].items():
-        if "type" in prov:
-            out[pid] = prov
-            continue
-        name, typ, base = _LEGACY_PROVIDERS.get(pid, (pid, "openai_compatible", ""))
-        if not (prov.get("api_key") or prov.get("base_url")) and pid not in used:
-            continue
-        out[pid] = {"name": name, "type": typ, "base_url": prov.get("base_url") or base, "api_key": prov.get("api_key", "")}
-    settings["providers"] = out
-
-
 def provider_configured(prov: dict) -> bool:
-    typ = prov.get("type")
-    if typ == "google":
-        return bool(prov.get("api_key"))
-    return bool(prov.get("base_url"))
+    return bool(prov.get("api_key")) if prov.get("type") == "google" else bool(prov.get("base_url"))
 
 
 def public_provider(pid: str, prov: dict) -> dict:
@@ -380,10 +444,29 @@ def public_provider(pid: str, prov: dict) -> dict:
             "api_key": _mask(prov.get("api_key", "")), "configured": provider_configured(prov)}
 
 
+def _model_usage() -> dict[str, dict[str, list[str]]]:
+    usage: dict[str, dict[str, list[str]]] = {}
+    for kb in db_all("kbs"):
+        mid = (kb.get("embedding") or {}).get("model_id")
+        if mid:
+            usage.setdefault(mid, {"kbs": [], "bots": []})["kbs"].append(kb["name"])
+    for bot in db_all("bots"):
+        for field in ("llm_model_id", "rerank_model_id"):
+            if bot.get(field):
+                usage.setdefault(bot[field], {"kbs": [], "bots": []})["bots"].append(bot["name"])
+    return usage
+
+
 def public_settings(settings: dict) -> dict:
+    usage = _model_usage()
+    providers = settings["providers"]
     return {
-        "providers": [public_provider(pid, prov) for pid, prov in settings["providers"].items()],
-        "models": settings["models"],
+        "providers": [public_provider(pid, prov) for pid, prov in providers.items()],
+        "models": [{"id": mid, **e, "provider_name": (providers.get(e.get("provider")) or {}).get("name", "—"),
+                    "is_default": settings["defaults"].get(e["kind"]) == mid,
+                    "used_by": usage.get(mid, {"kbs": [], "bots": []})}
+                   for mid, e in settings["registry"].items()],
+        "defaults": settings["defaults"],
         "vector": {"url": settings["vector"].get("url", ""), "api_key": _mask(settings["vector"].get("api_key", ""))},
         "central": {"url": settings["central"].get("url", ""), "license_key": _mask(settings["central"].get("license_key", ""))},
     }
@@ -397,40 +480,11 @@ def _apply_secret(target: dict, key: str, value) -> None:
         target[key] = value.strip()
 
 
-def merge_settings(current: dict, incoming: dict) -> dict:
-    merged = json.loads(json.dumps(current))
-    for pid, values in (incoming.get("providers") or {}).items():
-        if pid not in merged["providers"]:
-            continue
-        prov = merged["providers"][pid]
-        if "api_key" in values:
-            _apply_secret(prov, "api_key", values["api_key"])
-        if "base_url" in values:
-            prov["base_url"] = (values["base_url"] or "").strip()
-    for role, values in (incoming.get("models") or {}).items():
-        if role not in ("llm", "embedding", "rerank"):
-            continue
-        m = merged["models"].setdefault(role, {})
-        if "provider" in values and values["provider"] in merged["providers"]:
-            m["provider"] = values["provider"]
-        if "model" in values:
-            m["model"] = (values["model"] or "").strip()
-        if role == "embedding" and "dim" in values:
-            m["dim"] = int(values["dim"] or 0)
-        if role == "rerank" and "enabled" in values:
-            m["enabled"] = bool(values["enabled"])
-    for section, secret in (("vector", "api_key"), ("central", "license_key")):
-        for k, v in (incoming.get(section) or {}).items():
-            if k == secret:
-                _apply_secret(merged[section], k, v)
-            elif k == "url":
-                merged[section]["url"] = (v or "").strip()
-    return merged
-
+# ── แปลงเป็น credentials ที่ central รับ ──────────────
 
 def _endpoint(prov: dict) -> tuple[str, str | None, str]:
-    """(provider ที่ central รู้จัก, base_url, api_key) ตามรูปแบบ API ของการเชื่อมต่อ — ollama ใช้ endpoint
-    แบบ OpenAI ที่ /v1 (แปลงที่ node เพื่อให้ใช้ได้แม้ central ยังเป็นรุ่นที่ไม่รู้จัก ollama)"""
+    """(provider ที่ central รู้จัก, base_url, api_key) — ollama ใช้ endpoint แบบ OpenAI ที่ /v1
+    (แปลงที่ node เพื่อให้ใช้ได้แม้ central ยังเป็นรุ่นที่ไม่รู้จัก ollama)"""
     key = prov.get("api_key", "")
     typ = prov.get("type")
     if typ == "google":
@@ -442,34 +496,41 @@ def _endpoint(prov: dict) -> tuple[str, str | None, str]:
     return "openai_compatible", base or None, key or "not-needed"
 
 
-def _role_creds(s: dict, role: str) -> dict:
-    m = s["models"][role]
-    prov = s["providers"].get(m.get("provider") or "", {})
-    kind, base, key = _endpoint(prov)
-    out = {"provider": kind, "model": m.get("model", ""), "api_key": key}
+def resolve_model(s: dict, kind: str, model_id: str | None = None) -> tuple[str | None, dict | None]:
+    """โมเดลที่เลือกไว้ (ถ้ายังมีอยู่และเป็นประเภทถูก) ไม่งั้นค่าเริ่มต้นของประเภทนั้น"""
+    for mid in (model_id, s["defaults"].get(kind)):
+        e = s["registry"].get(mid or "")
+        if e and e["kind"] == kind:
+            return mid, e
+    return None, None
+
+
+def model_creds(s: dict, entry: dict | None) -> dict:
+    if not entry:
+        return {}
+    kind, base, key = _endpoint(s["providers"].get(entry.get("provider") or "", {}))
+    out = {"provider": kind, "model": entry.get("model", ""), "api_key": key}
     if base:
         out["base_url"] = base
     return out
 
 
-def credentials(settings: dict | None = None) -> dict:
+def credentials(settings: dict | None = None, *, llm_id: str | None = None, embedding_id: str | None = None,
+                rerank_id: str | None = None, use_rerank: bool = False) -> dict:
     s = settings or load_settings()
     creds = {
-        "llm": _role_creds(s, "llm"),
-        "embedding": _role_creds(s, "embedding"),
+        "llm": model_creds(s, resolve_model(s, "llm", llm_id)[1]),
+        "embedding": model_creds(s, resolve_model(s, "embedding", embedding_id)[1]),
         "vector": {"url": s["vector"].get("url", ""), "api_key": s["vector"].get("api_key") or None},
     }
-    rr = s["models"]["rerank"]
-    if rr.get("enabled") and rr.get("model"):
-        c = _role_creds(s, "rerank")
-        creds["rerank"] = {"api_key": c["api_key"], "model": c["model"], "base_url": c.get("base_url")}
+    if use_rerank:
+        rr = model_creds(s, resolve_model(s, "rerank", rerank_id)[1])
+        if rr:
+            creds["rerank"] = {"api_key": rr["api_key"], "model": rr["model"], "base_url": rr.get("base_url")}
     return creds
 
 
-def embedding_lock_info(settings: dict) -> dict:
-    e = settings["models"]["embedding"]
-    return {"provider": e.get("provider"), "model": e.get("model"), "dim": int(e.get("dim") or 0)}
-
+# ── รายชื่อโมเดลจากผู้ให้บริการ ─────────────────────────
 
 def _guess_kinds(model_id: str) -> list[str]:
     mid = model_id.lower()
@@ -591,20 +652,22 @@ def central_json(path: str, body: dict, settings: dict | None = None) -> dict:
     return resp.json()
 
 
-def kb_payload(kb: dict) -> dict:
-    return {"kb_id": kb["id"], "name": kb["name"], "collection_name": kb["collection_name"], "embedding": kb["embedding"]}
+def kb_payload(kb: dict, s: dict | None = None) -> dict:
+    """KB ที่ส่งให้ central — แนบ credentials ของ embedding ที่ KB นี้ผูกไว้ (central รุ่นใหม่ใช้สร้าง embedding ต่อ KB)"""
+    s = s or load_settings()
+    emb = kb.get("embedding") or {}
+    _, entry = resolve_model(s, "embedding", emb.get("model_id"))
+    return {"kb_id": kb["id"], "name": kb["name"], "collection_name": kb["collection_name"],
+            "embedding": {"model": emb.get("model"), "dim": emb.get("dim")},
+            "credentials": model_creds(s, entry) if entry and emb.get("model_id") in s["registry"] else {}}
 
 
-def _ctx() -> dict:
-    return {"credentials": credentials()}
+def _kb_ctx(kb: dict) -> dict:
+    return {"credentials": credentials(embedding_id=(kb.get("embedding") or {}).get("model_id"))}
 
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
-
-
-def _new_id() -> str:
-    return uuid.uuid4().hex[:12]
 
 
 def _safe_filename(name: str) -> str:
@@ -619,6 +682,7 @@ def _startup():
     init_db()
     migrate_legacy_state()
     load_settings()
+    ensure_kb_embeddings()
 
 
 # ══════════════════════════════════════════════
@@ -632,15 +696,33 @@ def healthz():
 
 @app.get("/api/admin/settings")
 def get_settings():
-    s = load_settings()
-    return {"settings": public_settings(s), "protocols": PROTOCOLS, "kb_count": len(db_all("kbs"))}
+    return {"settings": public_settings(load_settings()), "protocols": PROTOCOLS}
 
+
+@app.put("/api/admin/settings")
+def save_settings(body: dict = Body(...)):
+    """บันทึกโครงสร้างพื้นฐาน (Qdrant, central/license) — การเชื่อมต่อและคลังโมเดลมี endpoint ของตัวเอง"""
+    s = load_settings()
+    incoming = body.get("settings") or {}
+    new = json.loads(json.dumps(s))
+    for section, secret in (("vector", "api_key"), ("central", "license_key")):
+        for k, v in (incoming.get(section) or {}).items():
+            if k == secret:
+                _apply_secret(new[section], k, v)
+            elif k == "url":
+                new[section]["url"] = (v or "").strip()
+    _write_settings(new)
+    with _token_lock:
+        _tokens.clear()
+    return {"settings": public_settings(load_settings())}
+
+
+# ── การเชื่อมต่อ ─────────────────────────────────────
 
 class ProviderIn(BaseModel):
     name: str
     base_url: str = ""
     api_key: str | None = ""  # "" = ใช้ค่าเดิม (ตอนแก้ไข), null = ลบ
-    type: str | None = None   # ไม่ต้องส่ง — ระบบเดาจาก URL
 
 
 def detect_type(base_url: str, existing_type: str | None = None) -> str:
@@ -658,25 +740,23 @@ def detect_type(base_url: str, existing_type: str | None = None) -> str:
 def _provider_from_input(req: ProviderIn, existing: dict | None = None) -> dict:
     if not req.name.strip():
         raise HTTPException(400, "กรุณาตั้งชื่อการเชื่อมต่อ")
-    typ = req.type if req.type in PROTOCOLS else detect_type(req.base_url, (existing or {}).get("type"))
-    prov = {"name": req.name.strip(), "type": typ, "base_url": req.base_url.strip(),
-            "api_key": (existing or {}).get("api_key", "")}
+    prov = {"name": req.name.strip(), "type": detect_type(req.base_url, (existing or {}).get("type")),
+            "base_url": req.base_url.strip(), "api_key": (existing or {}).get("api_key", "")}
     _apply_secret(prov, "api_key", req.api_key)
-    if req.type == "google" and not prov["api_key"]:
+    if prov["type"] == "google" and not prov["api_key"]:
         raise HTTPException(400, "Google Gemini ต้องใช้ API key")
     return prov
 
 
-def _save_providers(providers: dict) -> None:
-    s = load_settings()
-    _write_settings({**s, "providers": providers})
+def _update_settings(**sections) -> None:
+    _write_settings({**load_settings(), **sections})
 
 
 @app.post("/api/admin/providers")
 def create_provider(req: ProviderIn):
     s = load_settings()
     pid = "p_" + _new_id()[:8]
-    _save_providers({**s["providers"], pid: _provider_from_input(req)})
+    _update_settings(providers={**s["providers"], pid: _provider_from_input(req)})
     return public_provider(pid, load_settings()["providers"][pid])
 
 
@@ -685,7 +765,7 @@ def update_provider(pid: str, req: ProviderIn):
     s = load_settings()
     if pid not in s["providers"]:
         raise HTTPException(404, "ไม่พบการเชื่อมต่อนี้")
-    _save_providers({**s["providers"], pid: _provider_from_input(req, s["providers"][pid])})
+    _update_settings(providers={**s["providers"], pid: _provider_from_input(req, s["providers"][pid])})
     return public_provider(pid, load_settings()["providers"][pid])
 
 
@@ -694,11 +774,10 @@ def delete_provider(pid: str):
     s = load_settings()
     if pid not in s["providers"]:
         raise HTTPException(404, "ไม่พบการเชื่อมต่อนี้")
-    used = [{"llm": "LLM", "embedding": "Embedding", "rerank": "Rerank"}[r]
-            for r, m in s["models"].items() if m.get("provider") == pid]
+    used = [e["name"] for e in s["registry"].values() if e.get("provider") == pid]
     if used:
-        raise HTTPException(409, f"การเชื่อมต่อนี้ใช้อยู่กับ {', '.join(used)} — เปลี่ยนโมเดลในส่วน ‘โมเดลที่ใช้ในระบบ’ ก่อนลบ")
-    _save_providers({k: v for k, v in s["providers"].items() if k != pid})
+        raise HTTPException(409, f"มีโมเดลในคลังใช้การเชื่อมต่อนี้อยู่ ({', '.join(used)}) — ลบโมเดลเหล่านั้นก่อน")
+    _update_settings(providers={k: v for k, v in s["providers"].items() if k != pid})
     return {"message": "ลบการเชื่อมต่อแล้ว"}
 
 
@@ -722,8 +801,119 @@ def provider_models(pid: str):
     return {"models": list_provider_models(prov)}
 
 
+# ── คลังโมเดล ────────────────────────────────────────
+
+class ModelIn(BaseModel):
+    name: str = ""
+    kind: str
+    provider: str
+    model: str
+    dim: int = 0
+    make_default: bool = False
+
+
+def _model_from_input(req: ModelIn, s: dict) -> dict:
+    if req.kind not in KINDS:
+        raise HTTPException(400, "ประเภทโมเดลไม่ถูกต้อง")
+    if req.provider not in s["providers"]:
+        raise HTTPException(400, "เลือกการเชื่อมต่อก่อน")
+    if not req.model.strip():
+        raise HTTPException(400, "ใส่ชื่อโมเดล")
+    if req.kind == "rerank" and s["providers"][req.provider].get("type") == "google":
+        raise HTTPException(400, "Rerank ต้องใช้การเชื่อมต่อแบบ OpenAI-compatible ที่มี endpoint /rerank")
+    entry = {"name": req.name.strip() or req.model.strip(), "kind": req.kind, "provider": req.provider, "model": req.model.strip()}
+    if req.kind == "embedding":
+        if req.dim <= 0:
+            raise HTTPException(400, "Embedding ต้องระบุจำนวนมิติ (dim) — กดตรวจเพื่อหาค่าที่ถูกต้อง")
+        entry["dim"] = int(req.dim)
+    return entry
+
+
+@app.post("/api/admin/models")
+def create_model(req: ModelIn):
+    s = load_settings()
+    entry = _model_from_input(req, s)
+    mid = f"m_{_new_id()[:8]}"
+    defaults = dict(s["defaults"])
+    if req.make_default or not defaults.get(req.kind):
+        defaults[req.kind] = mid
+    _update_settings(registry={**s["registry"], mid: entry}, defaults=defaults)
+    return {"id": mid}
+
+
+@app.put("/api/admin/models/{mid}")
+def update_model(mid: str, req: ModelIn):
+    s = load_settings()
+    old = s["registry"].get(mid)
+    if not old:
+        raise HTTPException(404, "ไม่พบโมเดลนี้")
+    entry = _model_from_input(ModelIn(**{**req.model_dump(), "kind": old["kind"]}), s)
+    used_kbs = _model_usage().get(mid, {}).get("kbs", [])
+    if old["kind"] == "embedding" and used_kbs and (entry["model"] != old["model"] or entry["dim"] != old.get("dim")):
+        raise HTTPException(409, f"embedding นี้ผูกกับ KB อยู่ ({', '.join(used_kbs)}) — เปลี่ยนโมเดลหรือมิติไม่ได้ แก้ได้แค่ชื่อและการเชื่อมต่อ")
+    defaults = dict(s["defaults"])
+    if req.make_default:
+        defaults[old["kind"]] = mid
+    _update_settings(registry={**s["registry"], mid: entry}, defaults=defaults)
+    if old["kind"] == "embedding":
+        for kb in db_all("kbs"):
+            if (kb.get("embedding") or {}).get("model_id") == mid:
+                kb["embedding"] = {"model_id": mid, "model": entry["model"], "dim": entry["dim"]}
+                db_put("kbs", kb["id"], kb)
+    return {"id": mid}
+
+
+@app.delete("/api/admin/models/{mid}")
+def delete_model(mid: str):
+    s = load_settings()
+    entry = s["registry"].get(mid)
+    if not entry:
+        raise HTTPException(404, "ไม่พบโมเดลนี้")
+    usage = _model_usage().get(mid, {"kbs": [], "bots": []})
+    if usage["kbs"]:
+        raise HTTPException(409, f"มี KB ใช้ embedding นี้อยู่ ({', '.join(usage['kbs'])}) — ลบ KB เหล่านั้นก่อนจึงจะลบได้")
+    if usage["bots"]:
+        raise HTTPException(409, f"มีบอทเลือกโมเดลนี้อยู่ ({', '.join(usage['bots'])}) — เปลี่ยนโมเดลในหน้า Chatbots ก่อน")
+    registry = {k: v for k, v in s["registry"].items() if k != mid}
+    defaults = dict(s["defaults"])
+    if defaults.get(entry["kind"]) == mid:  # ลบตัวที่เป็นค่าเริ่มต้น → ยกตัวอื่นประเภทเดียวกันขึ้นแทน (ถ้ามี)
+        defaults[entry["kind"]] = next((k for k, v in registry.items() if v["kind"] == entry["kind"]), None)
+    _update_settings(registry=registry, defaults=defaults)
+    return {"message": "ลบโมเดลแล้ว"}
+
+
+@app.post("/api/admin/models/{mid}/default")
+def set_default_model(mid: str):
+    s = load_settings()
+    entry = s["registry"].get(mid)
+    if not entry:
+        raise HTTPException(404, "ไม่พบโมเดลนี้")
+    _update_settings(defaults={**s["defaults"], entry["kind"]: mid})
+    return {"message": "ตั้งเป็นค่าเริ่มต้นแล้ว"}
+
+
+@app.post("/api/admin/models/test")
+def test_model(body: dict = Body(...)):
+    """ทดสอบโมเดลก่อนบันทึก ผ่าน central (เส้นทางเดียวกับใช้งานจริง) — embedding จะได้จำนวนมิติกลับมาด้วย"""
+    s = load_settings()
+    kind = body.get("kind")
+    prov = s["providers"].get(body.get("provider") or "")
+    if kind not in KINDS or not prov:
+        raise HTTPException(400, "เลือกประเภทและการเชื่อมต่อก่อน")
+    cfg = model_creds(s, {"provider": body.get("provider"), "model": (body.get("model") or "").strip()})
+    creds = credentials(s, use_rerank=False)
+    if kind == "rerank":
+        creds["rerank"] = {"api_key": cfg["api_key"], "model": cfg["model"], "base_url": cfg.get("base_url")}
+    else:
+        creds[kind] = cfg
+    result = central_json("/v1/credentials/check", {"ctx": {"credentials": creds}})
+    return result.get(kind) or {"ok": False, "message": "ไม่ได้ผลตรวจ"}
+
+
+# ── ตรวจ / สถานะ ─────────────────────────────────────
+
 def _run_check(settings: dict) -> dict:
-    """ตรวจทุกส่วนด้วยการตั้งค่าที่ให้มา (ใช้ได้ทั้งค่าที่บันทึกแล้ว และค่าในฟอร์มที่ยังไม่บันทึก)"""
+    """ตรวจทุกส่วนด้วยค่าเริ่มต้นของแต่ละประเภท"""
     url, _ = _central(settings)
     out: dict = {"central": {"url": url}}
     try:
@@ -740,45 +930,17 @@ def _run_check(settings: dict) -> dict:
         out["license"] = {"ok": False, "code": e.code, "message": e.message}
         return out
     try:
-        check = central_json("/v1/credentials/check", {"ctx": {"credentials": credentials(settings)}}, settings=settings)
+        creds = credentials(settings, use_rerank=True)
+        check = central_json("/v1/credentials/check", {"ctx": {"credentials": creds}}, settings=settings)
         for k in ("llm", "embedding", "vector", "rerank"):
             out[k] = check.get(k)
-        dim = int(settings["models"]["embedding"].get("dim") or 0)
+        _, emb = resolve_model(settings, "embedding")
         got = (check.get("embedding") or {}).get("dim")
-        if got and dim and got != dim:
-            out["embedding"]["dim_mismatch"] = {"configured": dim, "actual": got}
+        if emb and got and int(emb.get("dim") or 0) != got:
+            out["embedding"]["dim_mismatch"] = {"configured": emb.get("dim"), "actual": got}
     except CentralError as e:
         out["llm"] = {"ok": False, "error_code": e.code, "message": e.message}
     return out
-
-
-@app.post("/api/admin/settings/test")
-def test_settings(body: dict = Body(default={})):
-    return _run_check(merge_settings(load_settings(), body.get("settings") or {}))
-
-
-@app.put("/api/admin/settings")
-def save_settings(body: dict = Body(...)):
-    current = load_settings()
-    new = merge_settings(current, body.get("settings") or {})
-    if not new["models"]["embedding"].get("model") or int(new["models"]["embedding"].get("dim") or 0) <= 0:
-        raise HTTPException(400, "ต้องระบุโมเดล embedding และจำนวนมิติ (dim)")
-
-    # ล็อก embedding ต่อ KB — KB เดิมใช้โมเดลอื่นจะค้นไม่ได้ ต้องยืนยันก่อนเปลี่ยน
-    new_emb = embedding_lock_info(new)
-    affected = [kb["name"] for kb in db_all("kbs")
-                if kb["embedding"].get("model") != new_emb["model"] or int(kb["embedding"].get("dim") or 0) != new_emb["dim"]]
-    old_emb = embedding_lock_info(current)
-    if affected and (old_emb["model"], old_emb["dim"]) != (new_emb["model"], new_emb["dim"]) and not body.get("confirm_embedding_change"):
-        return JSONResponse(status_code=409, content={
-            "detail": "เปลี่ยน embedding แล้ว KB เดิมจะใช้ไม่ได้ ต้องสร้าง KB ใหม่และอัปโหลดใหม่",
-            "code": "embedding_change", "affected_kbs": affected,
-        })
-
-    _write_settings(new)
-    with _token_lock:
-        _tokens.clear()
-    return {"settings": public_settings(load_settings())}
 
 
 @app.post("/api/admin/check")
@@ -809,14 +971,20 @@ def admin_status():
             license_info = {"ok": True, **(info.get("license") or {}), "warnings": info.get("warnings")}
         except CentralError as e:
             license_info = {"ok": False, "code": e.code, "message": e.message}
+
+    def default_of(kind: str) -> dict | None:
+        mid, e = resolve_model(s, kind)
+        if not e:
+            return None
+        return {"id": mid, "name": e["name"], "model": e["model"], "dim": e.get("dim"),
+                "provider_name": (s["providers"].get(e.get("provider")) or {}).get("name", "—")}
+
     kbs = db_all("kbs")
     return {
         "central": central,
         "license": license_info,
-        "models": {"llm": {"provider": s["models"]["llm"].get("provider"), "model": s["models"]["llm"].get("model")},
-                   "embedding": embedding_lock_info(s),
-                   "rerank": bool(s["models"]["rerank"].get("enabled") and s["models"]["rerank"].get("model"))},
-        "provider_labels": {pid: prov.get("name") or pid for pid, prov in s["providers"].items()},
+        "defaults": {k: default_of(k) for k in KINDS},
+        "model_counts": {k: sum(1 for e in s["registry"].values() if e["kind"] == k) for k in KINDS},
         "counts": {"kbs": len(kbs), "files": sum(len(kb.get("files", {})) for kb in kbs),
                    "chunks": sum(f.get("chunks", 0) for kb in kbs for f in kb.get("files", {}).values()),
                    "bots": len(db_all("bots")), "skills": len(db_all("skills"))},
@@ -836,6 +1004,7 @@ def usage():
 class KbCreateRequest(BaseModel):
     name: str
     description: str = ""
+    embedding_model_id: str | None = None  # ว่าง = ค่าเริ่มต้น
 
 
 def _kb_out(kb: dict, with_files: bool = False) -> dict:
@@ -844,13 +1013,18 @@ def _kb_out(kb: dict, with_files: bool = False) -> dict:
         "id": kb["id"], "name": kb["name"], "description": kb.get("description", ""),
         "collection_name": kb["collection_name"], "created_at": kb["created_at"],
         "file_count": len(files), "chunk_count": sum(f.get("chunks", 0) for f in files.values()),
-        "embedding": kb["embedding"],
-        "embedding_matches": kb["embedding"].get("model") == load_settings()["models"]["embedding"].get("model"),
+        "embedding": {**kb["embedding"], "name": _embedding_name(kb)},
+        "embedding_available": (kb.get("embedding") or {}).get("model_id") in load_settings()["registry"],
     }
     if with_files:
         out["files"] = [{"name": n, "size": f.get("size", 0), "type": Path(n).suffix.lstrip("."),
                          "chunks": f.get("chunks", 0), "uploaded_at": f.get("uploaded_at")} for n, f in files.items()]
     return out
+
+
+def _embedding_name(kb: dict) -> str:
+    e = load_settings()["registry"].get((kb.get("embedding") or {}).get("model_id") or "")
+    return e["name"] if e else (kb.get("embedding") or {}).get("model", "—")
 
 
 def _get_kb(kb_id: str) -> dict:
@@ -869,17 +1043,20 @@ def list_kbs():
 def create_kb(req: KbCreateRequest):
     if not req.name.strip():
         raise HTTPException(400, "กรุณาระบุชื่อ Knowledge Base")
-    emb = embedding_lock_info(load_settings())
-    if not emb["model"] or emb["dim"] <= 0:
-        raise HTTPException(400, "ตั้งโมเดล embedding และ dim ในหน้าการเชื่อมต่อก่อนสร้าง Knowledge Base")
+    mid, entry = resolve_model(load_settings(), "embedding", req.embedding_model_id)
+    if not entry:
+        raise HTTPException(400, "ยังไม่มีโมเดล embedding — เพิ่มที่หลังบ้าน → การเชื่อมต่อ AI ก่อนสร้าง Knowledge Base")
+    if req.embedding_model_id and mid != req.embedding_model_id:
+        raise HTTPException(400, "ไม่พบโมเดล embedding ที่เลือก")
     kb_id = _new_id()
     kb = {
         "id": kb_id, "name": req.name.strip(), "description": req.description.strip(),
         "collection_name": f"kb_{kb_id}",
-        # ล็อก embedding ตอนสร้าง — เปลี่ยนทีหลังไม่ได้ ต้องสร้าง KB ใหม่แล้ว ingest ใหม่
-        "embedding": emb, "files": {}, "revision": 0, "created_at": _now(),
+        # ผูก embedding ตอนสร้าง — เปลี่ยนทีหลังไม่ได้ (vector ต่างโมเดลเทียบกันไม่ได้)
+        "embedding": {"model_id": mid, "model": entry["model"], "dim": int(entry.get("dim") or 0)},
+        "files": {}, "revision": 0, "created_at": _now(),
     }
-    central_json("/v1/kb/ensure", {"ctx": _ctx(), "kb": kb_payload(kb)})
+    central_json("/v1/kb/ensure", {"ctx": _kb_ctx(kb), "kb": kb_payload(kb)})
     db_put("kbs", kb_id, kb)
     return _kb_out(kb)
 
@@ -892,7 +1069,7 @@ def get_kb(kb_id: str):
 @app.delete("/api/kb/{kb_id}")
 def delete_kb(kb_id: str):
     kb = _get_kb(kb_id)
-    central_json("/v1/kb/drop", {"ctx": _ctx(), "kb": kb_payload(kb)})
+    central_json("/v1/kb/drop", {"ctx": _kb_ctx(kb), "kb": kb_payload(kb)})
     db_delete("kbs", kb_id)
     for bot in db_all("bots"):
         if kb_id in bot["kb_ids"]:
@@ -908,7 +1085,7 @@ def delete_kb(kb_id: str):
 
 def _ingest_via_central(kb: dict, filename: str, data: bytes) -> dict:
     url, _ = _central()
-    payload = {"ctx": _ctx(), "kb": kb_payload(kb), "source": {"filename": filename, "replace_existing": True}}
+    payload = {"ctx": _kb_ctx(kb), "kb": kb_payload(kb), "source": {"filename": filename, "replace_existing": True}}
     for attempt in range(2):
         headers = {"Authorization": f"Bearer {get_token(force=attempt > 0)}"}
         try:
@@ -942,10 +1119,8 @@ def upload_to_kb(kb_id: str, file: UploadFile = File(...)):
     suffix = Path(filename).suffix.lower()
     if suffix not in KB_ALLOWED:
         raise HTTPException(400, f"รองรับเฉพาะ {', '.join(KB_ALLOWED)} เท่านั้น")
-    current_model = load_settings()["models"]["embedding"].get("model")
-    if kb["embedding"].get("model") != current_model:
-        raise HTTPException(409, f"Knowledge Base นี้สร้างด้วย embedding '{kb['embedding'].get('model')}' แต่ตอนนี้ตั้งเป็น "
-                                 f"'{current_model}' — สร้าง Knowledge Base ใหม่เพื่อใช้ embedding ตัวใหม่")
+    if (kb.get("embedding") or {}).get("model_id") not in load_settings()["registry"]:
+        raise HTTPException(409, "โมเดล embedding ของ Knowledge Base นี้ถูกลบไปแล้ว — สร้าง Knowledge Base ใหม่")
     data = file.file.read()
 
     # เก็บต้นฉบับไว้ที่ node (central ไม่เก็บ) เผื่อวันที่ต้อง re-index
@@ -978,7 +1153,7 @@ def delete_kb_file(kb_id: str, filename: str):
     filename = _safe_filename(filename)
     if filename not in kb.get("files", {}):
         raise HTTPException(404, "ไม่พบไฟล์")
-    central_json("/v1/kb/delete-source", {"ctx": _ctx(), "kb": kb_payload(kb), "source": filename})
+    central_json("/v1/kb/delete-source", {"ctx": _kb_ctx(kb), "kb": kb_payload(kb), "source": filename})
     with _db_lock:
         kb = db_get("kbs", kb_id)
         if kb:
@@ -993,7 +1168,7 @@ def delete_kb_file(kb_id: str, filename: str):
 def get_kb_file_chunks(kb_id: str, filename: str):
     kb = _get_kb(kb_id)
     filename = _safe_filename(filename)
-    result = central_json("/v1/kb/chunks", {"ctx": _ctx(), "kb": kb_payload(kb), "source": filename})
+    result = central_json("/v1/kb/chunks", {"ctx": _kb_ctx(kb), "kb": kb_payload(kb), "source": filename})
     chunks = [{"id": c["id"], "text": c["text"], "length": len(c["text"]), "metadata": c["metadata"]}
               for c in result.get("chunks", [])]
     if not chunks:
@@ -1123,6 +1298,8 @@ class BotCreateRequest(BaseModel):
     use_rerank: bool = False
     quick_chat_enabled: bool = False
     quick_chat_tags: list[str] = Field(default_factory=list)
+    llm_model_id: str = ""      # ว่าง = ค่าเริ่มต้น
+    rerank_model_id: str = ""   # ว่าง = ค่าเริ่มต้น
 
 
 class BotUpdateRequest(BaseModel):
@@ -1134,16 +1311,32 @@ class BotUpdateRequest(BaseModel):
     use_rerank: bool | None = None
     quick_chat_enabled: bool | None = None
     quick_chat_tags: list[str] | None = None
+    llm_model_id: str | None = None
+    rerank_model_id: str | None = None
 
 
 def _enrich(bot: dict) -> dict:
     kbs = {kb["id"]: kb for kb in db_all("kbs")}
     skills = {s["id"]: s for s in db_all("skills")}
+    s = load_settings()
+    _, llm = resolve_model(s, "llm", bot.get("llm_model_id"))
+    _, rr = resolve_model(s, "rerank", bot.get("rerank_model_id"))
     return {
         **bot,
+        "llm_model_id": bot.get("llm_model_id") or "",
+        "rerank_model_id": bot.get("rerank_model_id") or "",
+        "llm_name": llm["name"] if llm else None,
+        "rerank_name": rr["name"] if rr else None,
         "kb_names": [kbs[k]["name"] for k in bot["kb_ids"] if k in kbs],
-        "skill_set_names": [skills[s]["name"] for s in bot["skill_set_ids"] if s in skills],
+        "skill_set_names": [skills[s_]["name"] for s_ in bot["skill_set_ids"] if s_ in skills],
     }
+
+
+def _validate_models(llm_id: str | None, rerank_id: str | None) -> None:
+    registry = load_settings()["registry"]
+    for mid, kind in ((llm_id, "llm"), (rerank_id, "rerank")):
+        if mid and (registry.get(mid) or {}).get("kind") != kind:
+            raise HTTPException(400, f"ไม่พบโมเดล {KIND_LABEL[kind]} ที่เลือก")
 
 
 def _validate_refs(kb_ids: list[str] | None, skill_ids: list[str] | None, tags: list[str] | None):
@@ -1182,12 +1375,14 @@ def create_bot(req: BotCreateRequest):
     if not req.name.strip():
         raise HTTPException(400, "กรุณาระบุชื่อ Chatbot")
     _validate_refs(req.kb_ids, req.skill_set_ids, req.quick_chat_tags)
+    _validate_models(req.llm_model_id, req.rerank_model_id)
     bid = _new_id()
     bot = {
         "id": bid, "name": req.name.strip(), "description": req.description.strip(),
         "kb_ids": req.kb_ids, "skill_set_ids": req.skill_set_ids,
         "system_prompt": req.system_prompt or DEFAULT_SYSTEM_PROMPT, "use_rerank": req.use_rerank,
         "quick_chat_enabled": req.quick_chat_enabled, "quick_chat_tags": [t.strip() for t in req.quick_chat_tags],
+        "llm_model_id": req.llm_model_id, "rerank_model_id": req.rerank_model_id,
         "created_at": _now(), "last_chatted_at": None,
     }
     db_put("bots", bid, bot)
@@ -1202,6 +1397,7 @@ def get_bot(bot_id: str):
 @app.put("/api/bots/{bot_id}")
 def update_bot(bot_id: str, req: BotUpdateRequest):
     _validate_refs(req.kb_ids, req.skill_set_ids, req.quick_chat_tags)
+    _validate_models(req.llm_model_id, req.rerank_model_id)
     with _db_lock:
         bot = _get_bot(bot_id)
         for field, value in req.model_dump(exclude_none=True).items():
@@ -1225,18 +1421,24 @@ def _cache_stamp(bot: dict) -> dict:
     return {
         "kbs": {k: kbs[k].get("revision", 0) for k in bot["kb_ids"] if k in kbs},
         "skills": {s: skills[s].get("revision", 0) for s in bot["skill_set_ids"] if s in skills},
-        "embed_model": load_settings()["models"]["embedding"].get("model"),
+        "embeddings": {k: (kbs[k].get("embedding") or {}).get("model_id") for k in bot["kb_ids"] if k in kbs},
     }
 
 
 def _chat_payload(bot: dict, message: str, stamp: dict) -> dict:
-    kbs = [kb_payload(kb) for k in bot["kb_ids"] if (kb := db_get("kbs", k))]
+    s = load_settings()
+    kb_rows = [kb for k in bot["kb_ids"] if (kb := db_get("kbs", k))]
+    kbs = [kb_payload(kb, s) for kb in kb_rows]
     skills = [{"id": s["id"], "name": s["name"], "files": [{"name": n, "content": c} for n, c in s["files"].items()]}
               for i in bot["skill_set_ids"] if (s := db_get("skills", i))]
     cached = db_get("caches", bot["id"]) or {}
     cache = cached.get("data") if cached.get("stamp") == stamp else {}
     return {
-        "ctx": {"credentials": credentials(), "cache": cache or {}},
+        # embedding ระดับ request = ของ KB แรก (central รุ่นเก่าใช้ตัวนี้ตัวเดียว) — central รุ่นใหม่ใช้ credentials ต่อ KB
+        "ctx": {"credentials": credentials(s, llm_id=bot.get("llm_model_id"), rerank_id=bot.get("rerank_model_id"),
+                                           use_rerank=bool(bot.get("use_rerank")),
+                                           embedding_id=((kb_rows[0].get("embedding") or {}).get("model_id") if kb_rows else None)),
+                "cache": cache or {}},
         "bot": {"system_prompt": bot.get("system_prompt", ""), "use_rerank": bot.get("use_rerank", False),
                 "kbs": kbs, "skills": skills},
         "message": message,

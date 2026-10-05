@@ -1,4 +1,4 @@
-import type { AdminStatus, Chatbot, CheckResult, KnowledgeBase, NodeSettings, ProtocolId, ProtocolInfo, ProviderConn, ProviderModel, SkillSet } from "./types";
+import type { AdminStatus, Chatbot, CheckItem, CheckResult, KnowledgeBase, ModelRole, NodeSettings, ProtocolId, ProtocolInfo, ProviderConn, ProviderModel, SkillSet } from "./types";
 
 // หน้าเว็บถูกเสิร์ฟจาก node ตัวเดียวกับ API (origin เดียวกัน) — ใช้ path แบบ relative
 export const API_BASE = (process.env.NEXT_PUBLIC_API_URL || "").replace(/\/$/, "");
@@ -33,8 +33,11 @@ export async function getKnowledgeBase(kbId: string): Promise<KnowledgeBase> {
   return request(`/api/kb/${encodeURIComponent(kbId)}`);
 }
 
-export async function createKnowledgeBase(name: string, description: string): Promise<KnowledgeBase> {
-  return request("/api/kb", { method: "POST", body: JSON.stringify({ name, description }) });
+export async function createKnowledgeBase(name: string, description: string, embeddingModelId?: string): Promise<KnowledgeBase> {
+  return request("/api/kb", {
+    method: "POST",
+    body: JSON.stringify({ name, description, embedding_model_id: embeddingModelId || null }),
+  });
 }
 
 export async function deleteKnowledgeBase(kbId: string): Promise<{ message: string }> {
@@ -112,6 +115,8 @@ export async function createBot(payload: {
   use_rerank?: boolean;
   quick_chat_enabled?: boolean;
   quick_chat_tags?: string[];
+  llm_model_id?: string;
+  rerank_model_id?: string;
 }): Promise<Chatbot> {
   return request("/api/bots", { method: "POST", body: JSON.stringify(payload) });
 }
@@ -127,6 +132,8 @@ export async function updateBot(
     use_rerank: boolean;
     quick_chat_enabled: boolean;
     quick_chat_tags: string[];
+    llm_model_id: string;
+    rerank_model_id: string;
   }>
 ): Promise<Chatbot> {
   return request(`/api/bots/${encodeURIComponent(botId)}`, { method: "PUT", body: JSON.stringify(payload) });
@@ -204,7 +211,6 @@ export type SettingsInput = {
 export async function getSettings(): Promise<{
   settings: NodeSettings;
   protocols: Record<ProtocolId, ProtocolInfo>;
-  kb_count: number;
 }> {
   return request("/api/admin/settings");
 }
@@ -232,30 +238,32 @@ export async function listProviderModels(providerId: string): Promise<{ models: 
   return request(`/api/admin/providers/${encodeURIComponent(providerId)}/models`, { method: "POST" });
 }
 
-export async function testSettings(settings: SettingsInput): Promise<CheckResult> {
-  return request("/api/admin/settings/test", { method: "POST", body: JSON.stringify({ settings }) });
+export async function saveSettings(settings: SettingsInput): Promise<{ settings: NodeSettings }> {
+  return request("/api/admin/settings", { method: "PUT", body: JSON.stringify({ settings }) });
 }
 
-export class EmbeddingChangeError extends Error {
-  affected: string[];
-  constructor(message: string, affected: string[]) {
-    super(message);
-    this.affected = affected;
-  }
+// ── คลังโมเดล ────────────────────────────────────────
+
+export type ModelInput = { name: string; kind: ModelRole; provider: string; model: string; dim?: number; make_default?: boolean };
+
+export async function createModel(body: ModelInput): Promise<{ id: string }> {
+  return request("/api/admin/models", { method: "POST", body: JSON.stringify(body) });
 }
 
-export async function saveSettings(settings: SettingsInput, confirmEmbeddingChange = false): Promise<{ settings: NodeSettings }> {
-  const res = await fetch(`${API_BASE}/api/admin/settings`, {
-    method: "PUT",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ settings, confirm_embedding_change: confirmEmbeddingChange }),
-  });
-  const body = await res.json().catch(() => ({}));
-  if (res.status === 409 && body?.code === "embedding_change") {
-    throw new EmbeddingChangeError(body.detail, body.affected_kbs ?? []);
-  }
-  if (!res.ok) throw new Error(body?.detail || `Request failed (${res.status})`);
-  return body;
+export async function updateModel(id: string, body: ModelInput): Promise<{ id: string }> {
+  return request(`/api/admin/models/${encodeURIComponent(id)}`, { method: "PUT", body: JSON.stringify(body) });
+}
+
+export async function deleteModel(id: string): Promise<{ message: string }> {
+  return request(`/api/admin/models/${encodeURIComponent(id)}`, { method: "DELETE" });
+}
+
+export async function setDefaultModel(id: string): Promise<{ message: string }> {
+  return request(`/api/admin/models/${encodeURIComponent(id)}/default`, { method: "POST" });
+}
+
+export async function testModel(body: { kind: ModelRole; provider: string; model: string }): Promise<CheckItem> {
+  return request("/api/admin/models/test", { method: "POST", body: JSON.stringify(body) });
 }
 
 export async function getAdminStatus(): Promise<AdminStatus> {

@@ -37,7 +37,7 @@ export function KnowledgeBaseDetail({
           <h2 className="text-xl font-semibold text-slate-900">{kb.name}</h2>
           {kb.description && <p className="mt-1 text-sm text-slate-500">{kb.description}</p>}
           <p className="mt-2 text-xs text-slate-400">
-            {kb.file_count} ไฟล์ · {kb.chunk_count} chunks · embedding: {kb.embedding?.model ?? "—"} ({kb.embedding?.dim ?? "?"} มิติ)
+            {kb.file_count} ไฟล์ · {kb.chunk_count} chunks · embedding: {kb.embedding?.name ?? kb.embedding?.model ?? "—"} ({kb.embedding?.dim ?? "?"} มิติ)
           </p>
         </div>
         <Button variant="ghost" onClick={onDeleteKb} className="text-rose-600 hover:bg-rose-50">
@@ -45,15 +45,14 @@ export function KnowledgeBaseDetail({
         </Button>
       </div>
 
-      {kb.embedding_matches === false && (
+      {kb.embedding_available === false && (
         <p className="flex items-start gap-2 rounded-lg bg-amber-50 px-3 py-2.5 text-xs text-amber-800 ring-1 ring-inset ring-amber-200">
           <AlertTriangle size={14} className="mt-px shrink-0" />
-          KB นี้สร้างด้วย embedding คนละตัวกับที่ตั้งไว้ตอนนี้ จึงค้นหาและอัปโหลดเพิ่มไม่ได้ — สร้าง KB ใหม่แล้วอัปโหลดเอกสารใหม่
-          หรือเปลี่ยน embedding กลับในหน้าการเชื่อมต่อ AI
+          โมเดล embedding ของ KB นี้ไม่อยู่ในคลังโมเดลแล้ว จึงค้นหาและอัปโหลดเพิ่มไม่ได้ — สร้าง KB ใหม่แล้วอัปโหลดเอกสารใหม่
         </p>
       )}
 
-      <DocDropzone onFileSelected={onUpload} disabled={uploading || kb.embedding_matches === false} />
+      <DocDropzone onFileSelected={onUpload} disabled={uploading || kb.embedding_available === false} />
       {uploading && (
         <p className="flex items-center gap-2 text-sm text-slate-500">
           <Loader2 size={14} className="animate-spin" /> กำลังอัปโหลดและสร้าง chunk...

@@ -7,13 +7,14 @@ import { ErrorNote, PageHeader } from "@/components/admin/AdminShell";
 import { Modal } from "@/components/ui/Modal";
 import { BotForm, type BotFormValues } from "@/components/bots/BotForm";
 import { BotCard } from "@/components/bots/BotCard";
-import { listBots, createBot, updateBot, deleteBot, listKnowledgeBases, listSkillSets } from "@/lib/api";
-import type { Chatbot, KnowledgeBase, SkillSet } from "@/lib/types";
+import { listBots, createBot, updateBot, deleteBot, listKnowledgeBases, listSkillSets, getSettings } from "@/lib/api";
+import type { Chatbot, KnowledgeBase, RegistryModel, SkillSet } from "@/lib/types";
 
 export default function BotsPage() {
   const [bots, setBots] = useState<Chatbot[]>([]);
   const [kbs, setKbs] = useState<KnowledgeBase[]>([]);
   const [skillSets, setSkillSets] = useState<SkillSet[]>([]);
+  const [models, setModels] = useState<RegistryModel[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -21,7 +22,8 @@ export default function BotsPage() {
   const [editingBot, setEditingBot] = useState<Chatbot | null>(null);
 
   async function refresh() {
-    const [botsRes, kbsRes, skillsRes] = await Promise.all([listBots(), listKnowledgeBases(), listSkillSets()]);
+    const [botsRes, kbsRes, skillsRes, settingsRes] = await Promise.all([listBots(), listKnowledgeBases(), listSkillSets(), getSettings()]);
+    setModels(settingsRes.settings.models);
     setBots(botsRes.bots);
     setKbs(kbsRes.knowledge_bases);
     setSkillSets(skillsRes.skill_sets);
@@ -99,7 +101,7 @@ export default function BotsPage() {
 
       {showCreate && (
         <Modal title="สร้าง Chatbot ใหม่" onClose={() => setShowCreate(false)}>
-          <BotForm knowledgeBases={kbs} skillSets={skillSets} submitLabel="สร้าง Chatbot" onSubmit={handleCreate} />
+          <BotForm knowledgeBases={kbs} skillSets={skillSets} models={models} submitLabel="สร้าง Chatbot" onSubmit={handleCreate} />
         </Modal>
       )}
 
@@ -108,6 +110,7 @@ export default function BotsPage() {
           <BotForm
             knowledgeBases={kbs}
             skillSets={skillSets}
+            models={models}
             initial={{
               name: editingBot.name,
               description: editingBot.description,
@@ -117,6 +120,8 @@ export default function BotsPage() {
               use_rerank: editingBot.use_rerank,
               quick_chat_enabled: editingBot.quick_chat_enabled,
               quick_chat_tags: editingBot.quick_chat_tags,
+              llm_model_id: editingBot.llm_model_id,
+              rerank_model_id: editingBot.rerank_model_id,
             }}
             submitLabel="บันทึกการแก้ไข"
             onSubmit={handleUpdate}

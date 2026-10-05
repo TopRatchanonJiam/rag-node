@@ -1,15 +1,12 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useState, type ReactNode } from "react";
 import {
-  AlertTriangle,
-  ArrowLeft,
   CheckCircle2,
   Cpu,
   Database,
   KeyRound,
   Loader2,
-  Lock,
   Plus,
   RefreshCw,
   Save,
@@ -22,28 +19,30 @@ import { ErrorNote, PageHeader } from "@/components/admin/AdminShell";
 import { Button } from "@/components/ui/Button";
 import { Modal } from "@/components/ui/Modal";
 import {
-  EmbeddingChangeError,
+  createModel,
   createProvider,
+  deleteModel,
   deleteProvider,
   getSettings,
   listProviderModels,
   runFullCheck,
   saveSettings,
+  setDefaultModel,
+  testModel,
   testProvider,
-  testSettings,
+  updateModel,
   updateProvider,
-  type SettingsInput,
 } from "@/lib/api";
 import type {
   CheckItem,
   CheckResult,
   ModelRole,
-  ModelsSettings,
   NodeSettings,
   ProtocolId,
   ProtocolInfo,
   ProviderConn,
   ProviderModel,
+  RegistryModel,
   SecretMask,
 } from "@/lib/types";
 
@@ -251,79 +250,218 @@ function ConnectionModal({
   );
 }
 
-// ── แถวเลือกโมเดลต่อหน้าที่ ─────────────────────────────
+// ── หน้าต่างเพิ่ม/แก้ไขโมเดลในคลัง ───────────────────────
 
-function ModelRow({
-  role,
-  title,
-  description,
-  value,
+const KIND_INFO: Record<ModelRole, { label: string; title: string; description: string }> = {
+  llm: { label: "LLM", title: "LLM (ตอบคำถาม)", description: "บอทแต่ละตัวเลือกใช้ได้ — ไม่เลือก = ใช้ค่าเริ่มต้น และใช้จัดข้อมูลตอนอัปโหลดเอกสาร" },
+  embedding: { label: "Embedding", title: "Embedding (ค้นหาเอกสาร)", description: "เลือกตอนสร้าง KB แล้ว KB ผูกกับตัวนั้นตลอด — ลบได้เมื่อไม่มี KB ใช้แล้ว" },
+  rerank: { label: "Rerank", title: "Rerank (ไม่บังคับ)", description: "ใช้กับบอทที่เปิด ‘ใช้ Rerank’ — ต้องเป็นการเชื่อมต่อที่มี endpoint /rerank เช่น SiliconFlow" },
+};
+
+function ModelModal({
+  kind,
+  model,
   connections,
-  models,
-  loadingModels,
-  onProvider,
-  onModel,
-  onLoadModels,
-  children,
+  onClose,
+  onSaved,
 }: {
-  role: ModelRole;
-  title: string;
-  description: string;
-  value: { provider: string; model: string };
+  kind: ModelRole;
+  model: RegistryModel | null; // null = เพิ่มใหม่
   connections: ProviderConn[];
-  models: ProviderModel[] | undefined;
-  loadingModels: boolean;
-  onProvider: (pid: string) => void;
-  onModel: (m: string) => void;
-  onLoadModels: () => void;
-  children?: ReactNode;
+  onClose: () => void;
+  onSaved: () => Promise<void>;
 }) {
-  // rerank ใช้ endpoint /rerank แบบ OpenAI-compatible เท่านั้น
-  const options = role === "rerank" ? connections.filter((c) => c.type === "openai_compatible") : connections;
-  const current = connections.find((c) => c.id === value.provider);
-  const listId = `models-${role}`;
-  const suggested = (models ?? []).filter((m) => m.kinds.includes(role));
-  const shown = suggested.length ? suggested : models ?? [];
+  const options = kind === "rerank" ? connections.filter((c) => c.type !== "google") : connections;
+  const [name, setName] = useState(model?.name ?? "");
+  const [provider, setProvider] = useState(model?.provider ?? options.find((c) => c.configured)?.id ?? "");
+  const [modelId, setModelId] = useState(model?.model ?? "");
+  const [dim, setDim] = useState<number>(model?.dim ?? 0);
+  const [makeDefault, setMakeDefault] = useState(false);
+  const [list, setList] = useState<ProviderModel[] | null>(null);
+  const [loadingList, setLoadingList] = useState(false);
+  const [busy, setBusy] = useState<"test" | "save" | null>(null);
+  const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
+  const lockedByKb = kind === "embedding" && !!model?.used_by.kbs.length;
+
+  useEffect(() => {
+    setList(null);
+    if (!provider || !connections.find((c) => c.id === provider)?.configured) return;
+    setLoadingList(true);
+    listProviderModels(provider)
+      .then(({ models }) => setList(models))
+      .catch(() => setList([]))
+      .finally(() => setLoadingList(false));
+  }, [provider, connections]);
+
+  const suggestions = (list ?? []).filter((m) => m.kinds.includes(kind));
+  const shown = suggestions.length ? suggestions : list ?? [];
+
+  async function handleTest() {
+    setBusy("test");
+    setMsg(null);
+    try {
+      const r = await testModel({ kind, provider, model: modelId });
+      if (r.ok && kind === "embedding" && typeof r.dim === "number") {
+        setDim(r.dim);
+        setMsg({ ok: true, text: `ใช้งานได้ — โมเดลนี้ให้ ${r.dim} มิติ (ใส่ให้แล้ว)` });
+      } else {
+        setMsg({ ok: !!r.ok, text: r.ok ? "ใช้งานได้" : String(r.message ?? r.error_code ?? "ใช้งานไม่ได้") });
+      }
+    } catch (e) {
+      setMsg({ ok: false, text: e instanceof Error ? e.message : "ทดสอบไม่สำเร็จ" });
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function handleSave() {
+    setBusy("save");
+    setMsg(null);
+    try {
+      const body = { name: name.trim() || modelId.trim(), kind, provider, model: modelId.trim(), dim, make_default: makeDefault };
+      if (model) await updateModel(model.id, body);
+      else await createModel(body);
+      await onSaved();
+      onClose();
+    } catch (e) {
+      setMsg({ ok: false, text: e instanceof Error ? e.message : "บันทึกไม่สำเร็จ" });
+    } finally {
+      setBusy(null);
+    }
+  }
 
   return (
-    <div className="grid gap-4 border-b border-accent-100 py-5 first:pt-0 last:border-0 last:pb-0 lg:grid-cols-[220px_1fr]">
-      <div>
-        <p className="text-sm font-semibold text-accent-900">{title}</p>
-        <p className="mt-0.5 text-xs text-accent-500">{description}</p>
-      </div>
-      <div className="flex flex-col gap-3">
-        <div className="grid gap-3 sm:grid-cols-2">
-          <Field
-            label="การเชื่อมต่อ"
-            hint={!current ? <span className="text-amber-700">เลือกการเชื่อมต่อ (เพิ่มได้ที่ส่วนด้านบน)</span> : !current.configured ? <span className="text-amber-700">การเชื่อมต่อนี้ยังตั้งค่าไม่ครบ</span> : undefined}
-          >
-            <select className="field" value={current ? value.provider : ""} onChange={(e) => onProvider(e.target.value)}>
-              {!current && <option value="">— เลือก —</option>}
-              {options.map((c) => (
-                <option key={c.id} value={c.id}>{c.name}{c.configured ? "" : " (ยังตั้งค่าไม่ครบ)"}</option>
-              ))}
-            </select>
-          </Field>
-          <Field label="โมเดล" hint={models ? `พบ ${shown.length} โมเดล — เลือกจากรายการหรือพิมพ์ชื่อเองได้` : "กดปุ่มรีเฟรชเพื่อดึงรายชื่อโมเดล"}>
-            <div className="flex gap-2">
-              <input className="field" list={listId} value={value.model} onChange={(e) => onModel(e.target.value)} placeholder="ชื่อโมเดล" />
-              <button
-                type="button"
-                onClick={onLoadModels}
-                disabled={!current?.configured || loadingModels}
-                title="ดึงรายชื่อโมเดล"
-                className="flex h-[38px] w-10 shrink-0 items-center justify-center rounded-lg border border-accent-200 text-accent-500 hover:bg-accent-50 disabled:opacity-40"
-              >
-                {loadingModels ? <Loader2 size={15} className="animate-spin" /> : <RefreshCw size={15} />}
-              </button>
-            </div>
-            <datalist id={listId}>
-              {shown.map((m) => <option key={m.id} value={m.id} />)}
-            </datalist>
-          </Field>
+    <Modal title={`${model ? "แก้ไข" : "เพิ่ม"} ${KIND_INFO[kind].label}`} onClose={onClose}>
+      <div className="flex flex-col gap-4">
+        {options.length === 0 ? (
+          <p className="rounded-lg bg-amber-50 px-3 py-2.5 text-sm text-amber-800">ยังไม่มีการเชื่อมต่อที่ใช้ได้ — เพิ่มการเชื่อมต่อในส่วนด้านบนก่อน</p>
+        ) : (
+          <>
+            <Field label="การเชื่อมต่อ">
+              <select className="field" value={provider} onChange={(e) => { setProvider(e.target.value); setMsg(null); }}>
+                {!provider && <option value="">— เลือก —</option>}
+                {options.map((c) => (
+                  <option key={c.id} value={c.id}>{c.name}{c.configured ? "" : " (ตั้งค่ายังไม่ครบ)"}</option>
+                ))}
+              </select>
+            </Field>
+            <Field
+              label="โมเดล"
+              hint={lockedByKb ? "ผูกกับ KB อยู่ — เปลี่ยนโมเดลไม่ได้" : loadingList ? "กำลังดึงรายชื่อโมเดล..." : list ? `พบ ${shown.length} โมเดล — เลือกจากรายการหรือพิมพ์เองได้` : undefined}
+            >
+              <input className="field font-mono text-[13px]" list="registry-model-list" value={modelId} disabled={lockedByKb} onChange={(e) => { setModelId(e.target.value); setMsg(null); }} placeholder="ชื่อโมเดล" spellCheck={false} />
+              <datalist id="registry-model-list">
+                {shown.map((m) => <option key={m.id} value={m.id} />)}
+              </datalist>
+            </Field>
+            {kind === "embedding" && (
+              <Field label="จำนวนมิติ (dim)" hint={lockedByKb ? "ผูกกับ KB อยู่ — เปลี่ยนไม่ได้" : "กด ‘ทดสอบ’ แล้วระบบใส่ค่าที่ถูกต้องให้"}>
+                <input type="number" min={1} className="field" value={dim || ""} disabled={lockedByKb} onChange={(e) => setDim(Number(e.target.value))} />
+              </Field>
+            )}
+            <Field label="ชื่อที่แสดง (ไม่บังคับ)" hint="เว้นว่าง = ใช้ชื่อโมเดล">
+              <input className="field" value={name} onChange={(e) => setName(e.target.value)} placeholder={modelId || "เช่น Gemini เร็ว"} />
+            </Field>
+            {!model?.is_default && (
+              <label className="flex items-center gap-2 text-sm text-accent-700">
+                <input type="checkbox" checked={makeDefault} onChange={(e) => setMakeDefault(e.target.checked)} className="h-4 w-4 rounded border-accent-300 text-brand-600 focus:ring-brand-500" />
+                ตั้งเป็นค่าเริ่มต้นของ {KIND_INFO[kind].label}
+              </label>
+            )}
+          </>
+        )}
+        {msg && (
+          <p className={`flex items-start gap-1.5 rounded-lg px-3 py-2 text-xs ${msg.ok ? "bg-brand-50 text-brand-800" : "bg-rose-50 text-rose-700"}`}>
+            {msg.ok ? <CheckCircle2 size={14} className="mt-px shrink-0" /> : <XCircle size={14} className="mt-px shrink-0" />}
+            {msg.text}
+          </p>
+        )}
+        <div className="flex justify-end gap-2">
+          <Button variant="secondary" onClick={handleTest} disabled={!!busy || !provider || !modelId.trim()}>
+            {busy === "test" ? <Loader2 size={15} className="animate-spin" /> : <RefreshCw size={15} />} ทดสอบ
+          </Button>
+          <Button onClick={handleSave} disabled={!!busy || !provider || !modelId.trim() || (kind === "embedding" && !dim)}>
+            {busy === "save" ? <Loader2 size={15} className="animate-spin" /> : <Save size={15} />} บันทึก
+          </Button>
         </div>
-        {children}
       </div>
+    </Modal>
+  );
+}
+
+// ── กลุ่มโมเดลต่อประเภท ───────────────────────────────
+
+function ModelGroup({
+  kind,
+  models,
+  onAdd,
+  onEdit,
+  onDefault,
+  onDelete,
+}: {
+  kind: ModelRole;
+  models: RegistryModel[];
+  onAdd: () => void;
+  onEdit: (m: RegistryModel) => void;
+  onDefault: (m: RegistryModel) => void;
+  onDelete: (m: RegistryModel) => void;
+}) {
+  const info = KIND_INFO[kind];
+  return (
+    <div className="border-b border-accent-100 py-5 first:pt-0 last:border-0 last:pb-0">
+      <div className="mb-3 flex flex-wrap items-start justify-between gap-2">
+        <div>
+          <p className="text-sm font-semibold text-accent-900">{info.title}</p>
+          <p className="mt-0.5 max-w-2xl text-xs text-accent-500">{info.description}</p>
+        </div>
+        <button
+          type="button"
+          onClick={onAdd}
+          className="flex shrink-0 items-center gap-1 rounded-lg border border-dashed border-accent-300 px-2.5 py-1.5 text-xs font-medium text-accent-600 hover:border-brand-400 hover:text-brand-700"
+        >
+          <Plus size={13} /> เพิ่ม {info.label}
+        </button>
+      </div>
+      {models.length === 0 ? (
+        <p className="rounded-lg bg-accent-50 px-3 py-2.5 text-xs text-accent-400">ยังไม่มี {info.label}</p>
+      ) : (
+        <div className="overflow-hidden rounded-xl border border-accent-200">
+          {models.map((m) => {
+            const usage = [
+              m.used_by.kbs.length ? `KB: ${m.used_by.kbs.join(", ")}` : "",
+              m.used_by.bots.length ? `บอท: ${m.used_by.bots.join(", ")}` : "",
+            ].filter(Boolean).join(" · ");
+            return (
+              <div key={m.id} className="flex flex-wrap items-center gap-3 border-b border-accent-100 px-4 py-3 last:border-0">
+                <div className="min-w-0 flex-1">
+                  <p className="flex flex-wrap items-center gap-2 text-sm font-medium text-accent-900">
+                    {m.name}
+                    {m.is_default && <span className="rounded bg-brand-600 px-1.5 py-0.5 text-[10px] font-semibold text-white">ค่าเริ่มต้น</span>}
+                  </p>
+                  <p className="mt-0.5 truncate text-xs text-accent-500">
+                    {m.provider_name} · <span className="font-mono">{m.model}</span>
+                    {kind === "embedding" && m.dim ? ` · ${m.dim} มิติ` : ""}
+                  </p>
+                  {usage && <p className="mt-0.5 truncate text-[11px] text-accent-400">ใช้อยู่กับ {usage}</p>}
+                </div>
+                <div className="flex shrink-0 items-center gap-1">
+                  {!m.is_default && (
+                    <button type="button" onClick={() => onDefault(m)} className="rounded-lg px-2 py-1 text-xs font-medium text-accent-500 hover:bg-accent-100 hover:text-accent-800">
+                      ตั้งเป็นค่าเริ่มต้น
+                    </button>
+                  )}
+                  <button type="button" onClick={() => onEdit(m)} title="แก้ไข" className="rounded-lg p-1.5 text-accent-400 hover:bg-accent-100 hover:text-accent-700">
+                    <Settings2 size={15} />
+                  </button>
+                  <button type="button" onClick={() => onDelete(m)} title="ลบ" className="rounded-lg p-1.5 text-accent-400 hover:bg-rose-50 hover:text-rose-600">
+                    <Trash2 size={15} />
+                  </button>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
     </div>
   );
 }
@@ -333,18 +471,9 @@ function ModelRow({
 export default function SettingsPage() {
   const [settings, setSettings] = useState<NodeSettings | null>(null);
   const [protocols, setProtocols] = useState<Record<ProtocolId, ProtocolInfo> | null>(null);
-  const [kbCount, setKbCount] = useState(0);
   const [error, setError] = useState<string | null>(null);
-
-  const [editing, setEditing] = useState<ProviderConn | "new" | null>(null);
-  const [models, setModels] = useState<ModelsSettings | null>(null);
-  const [modelLists, setModelLists] = useState<Record<string, ProviderModel[]>>({});
-  const [loadingList, setLoadingList] = useState<string | null>(null);
-  const [savingModels, setSavingModels] = useState(false);
-  const [modelsNotice, setModelsNotice] = useState<string | null>(null);
-  const [dimCheck, setDimCheck] = useState<CheckItem | null>(null);
-  const [checkingDim, setCheckingDim] = useState(false);
-  const [confirm, setConfirm] = useState<string[] | null>(null);
+  const [editingConn, setEditingConn] = useState<ProviderConn | "new" | null>(null);
+  const [editingModel, setEditingModel] = useState<{ kind: ModelRole; model: RegistryModel | null } | null>(null);
 
   const [vectorUrl, setVectorUrl] = useState("");
   const [vectorKey, setVectorKey] = useState<SecretInput>("");
@@ -360,8 +489,6 @@ export default function SettingsPage() {
     const res = await getSettings();
     setSettings(res.settings);
     setProtocols(res.protocols);
-    setKbCount(res.kb_count);
-    setModels(res.settings.models);
     setVectorUrl(res.settings.vector.url);
     setCentralUrl(res.settings.central.url);
     setVectorKey("");
@@ -372,78 +499,23 @@ export default function SettingsPage() {
     load().catch((e) => setError(e instanceof Error ? e.message : "โหลดการตั้งค่าไม่สำเร็จ"));
   }, [load]);
 
-  const loadModels = useCallback(async (pid: string) => {
-    if (!pid) return;
-    setLoadingList(pid);
-    try {
-      const { models } = await listProviderModels(pid);
-      setModelLists((m) => ({ ...m, [pid]: models }));
-    } catch (e) {
-      setError(e instanceof Error ? `ดึงรายชื่อโมเดลไม่สำเร็จ: ${e.message}` : "ดึงรายชื่อโมเดลไม่สำเร็จ");
-    } finally {
-      setLoadingList(null);
-    }
-  }, []);
-
-  // ดึงรายชื่อโมเดลของการเชื่อมต่อที่ถูกเลือกอยู่ให้อัตโนมัติ (เฉพาะที่ตั้งค่าครบ)
-  useEffect(() => {
-    if (!settings || !models) return;
-    new Set([models.llm.provider, models.embedding.provider, models.rerank.provider]).forEach((pid) => {
-      const conn = settings.providers.find((c) => c.id === pid);
-      if (conn?.configured && !modelLists[pid]) loadModels(pid);
-    });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [settings, models?.llm.provider, models?.embedding.provider, models?.rerank.provider]);
-
-  const savedEmbedding = settings?.models.embedding;
-  const embeddingChanged = useMemo(
-    () => !!(models && savedEmbedding && kbCount > 0 && (models.embedding.model !== savedEmbedding.model || Number(models.embedding.dim) !== savedEmbedding.dim)),
-    [models, savedEmbedding, kbCount]
-  );
-
-  if (!settings || !models || !protocols) {
+  if (!settings || !protocols) {
     return error ? <ErrorNote message={error} /> : (
       <div className="flex items-center gap-2 text-sm text-accent-400"><Loader2 size={16} className="animate-spin" /> กำลังโหลด...</div>
     );
   }
 
   const connections = settings.providers;
-  const usedBy = (pid: string) =>
-    (["llm", "embedding", "rerank"] as ModelRole[]).filter((r) => models[r].provider === pid && (r !== "rerank" || models.rerank.enabled));
+  const modelsOf = (kind: ModelRole) => settings.models.filter((m) => m.kind === kind);
+  const connUsage = (pid: string) => settings.models.filter((m) => m.provider === pid);
 
-  function patchModel<R extends ModelRole>(role: R, values: Partial<ModelsSettings[R]>) {
-    setModels((m) => (m ? { ...m, [role]: { ...m[role], ...values } } : m));
-    setModelsNotice(null);
-    if (role === "embedding") setDimCheck(null);
-  }
-
-  async function handleSaveModels(confirmChange = false) {
-    if (!models) return;
-    setSavingModels(true);
+  async function act(fn: () => Promise<unknown>) {
     setError(null);
     try {
-      await saveSettings({ models: models as unknown as SettingsInput["models"] }, confirmChange);
-      setConfirm(null);
+      await fn();
       await load();
-      setModelsNotice("บันทึกแล้ว — มีผลทันที");
     } catch (e) {
-      if (e instanceof EmbeddingChangeError) setConfirm(e.affected);
-      else setError(e instanceof Error ? e.message : "บันทึกไม่สำเร็จ");
-    } finally {
-      setSavingModels(false);
-    }
-  }
-
-  async function handleCheckDim() {
-    if (!models) return;
-    setCheckingDim(true);
-    try {
-      const r = await testSettings({ models: { embedding: models.embedding } });
-      setDimCheck(r.embedding ?? { ok: false, message: String(r.license?.message ?? r.central?.message ?? "ตรวจไม่ได้") });
-    } catch (e) {
-      setDimCheck({ ok: false, message: e instanceof Error ? e.message : "ตรวจไม่ได้" });
-    } finally {
-      setCheckingDim(false);
+      setError(e instanceof Error ? e.message : "ไม่สำเร็จ");
     }
   }
 
@@ -476,17 +548,14 @@ export default function SettingsPage() {
     }
   }
 
-  const detectedDim = typeof dimCheck?.dim === "number" ? dimCheck.dim : null;
-  const ROLE_LABEL: Record<ModelRole, string> = { llm: "LLM", embedding: "Embedding", rerank: "Rerank" };
-
   return (
     <div>
       <PageHeader
         title="การเชื่อมต่อ AI"
-        description="เพิ่มการเชื่อมต่อกับผู้ให้บริการ AI เจ้าไหนก็ได้ แล้วเลือกโมเดลที่ใช้ในแต่ละหน้าที่ — มีผลทันทีโดยไม่ต้องรีสตาร์ต และ key ถูกเข้ารหัสก่อนเก็บ"
+        description="เพิ่มการเชื่อมต่อและโมเดลไว้เป็นตัวเลือก — KB เลือก embedding ตอนสร้าง ส่วนบอทเลือก LLM/rerank ได้เอง (ไม่เลือก = ใช้ค่าเริ่มต้น)"
         actions={
           <Button variant="secondary" onClick={handleCheckAll} disabled={checking}>
-            {checking ? <Loader2 size={15} className="animate-spin" /> : <RefreshCw size={15} />} ตรวจทั้งระบบ
+            {checking ? <Loader2 size={15} className="animate-spin" /> : <RefreshCw size={15} />} ตรวจค่าเริ่มต้นทั้งระบบ
           </Button>
         }
       />
@@ -512,30 +581,26 @@ export default function SettingsPage() {
 
       <div className="flex flex-col gap-5">
         {/* 1) การเชื่อมต่อ */}
-        <Panel icon={<Cpu size={18} />} title="การเชื่อมต่อผู้ให้บริการ" description="ต่อได้ทุกเจ้าที่ใช้ API แบบ OpenAI รวมถึง Gemini และ Ollama — เพิ่มได้ไม่จำกัด เจ้าเดียวกันหลายบัญชีก็ได้">
+        <Panel icon={<Cpu size={18} />} title="การเชื่อมต่อผู้ให้บริการ" description="กรอกชื่อ / URL / API key — ต่อได้ทุกเจ้าที่ใช้ API แบบ OpenAI รวมถึง Gemini และ Ollama">
           <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
             {connections.map((c) => {
-              const roles = usedBy(c.id);
+              const used = connUsage(c.id);
               return (
                 <div key={c.id} className={`flex flex-col gap-3 rounded-xl border p-4 ${c.configured ? "border-accent-200 bg-white" : "border-amber-200 bg-amber-50/40"}`}>
                   <div className="flex items-start gap-3">
                     <Mark name={c.name} type={c.type} size="lg" />
                     <div className="min-w-0 flex-1">
                       <p className="truncate text-sm font-semibold text-accent-900">{c.name}</p>
-                      <p className="truncate text-[11px] text-accent-400">{protocols[c.type]?.label}</p>
+                      <p className="truncate font-mono text-[11px] text-accent-400">{c.base_url || protocols[c.type]?.label}</p>
                     </div>
                   </div>
                   <div className="flex flex-wrap items-center justify-between gap-2">
-                    <div className="flex min-w-0 flex-wrap gap-1">
-                      {roles.length ? roles.map((r) => (
-                        <span key={r} className="rounded bg-brand-50 px-1.5 py-0.5 text-[10px] font-medium text-brand-700">ใช้กับ {ROLE_LABEL[r]}</span>
-                      )) : (
-                        <span className={`text-xs ${c.configured ? "text-accent-400" : "text-amber-700"}`}>{c.configured ? "ยังไม่ได้ใช้" : "ตั้งค่ายังไม่ครบ"}</span>
-                      )}
-                    </div>
+                    <span className={`text-xs ${c.configured ? "text-accent-500" : "text-amber-700"}`}>
+                      {!c.configured ? "ตั้งค่ายังไม่ครบ" : used.length ? `ใช้กับ ${used.length} โมเดล` : "ยังไม่มีโมเดลใช้"}
+                    </span>
                     <button
                       type="button"
-                      onClick={() => setEditing(c)}
+                      onClick={() => setEditingConn(c)}
                       className="flex shrink-0 items-center gap-1 rounded-lg border border-accent-200 bg-white px-2.5 py-1.5 text-xs font-medium text-accent-700 hover:border-brand-300 hover:text-brand-700"
                     >
                       <Settings2 size={13} /> แก้ไข
@@ -546,7 +611,7 @@ export default function SettingsPage() {
             })}
             <button
               type="button"
-              onClick={() => setEditing("new")}
+              onClick={() => setEditingConn("new")}
               className="flex min-h-[112px] flex-col items-center justify-center gap-1.5 rounded-xl border border-dashed border-accent-300 text-sm font-medium text-accent-500 transition-colors hover:border-brand-400 hover:bg-brand-50/30 hover:text-brand-700"
             >
               <Plus size={18} /> เพิ่มการเชื่อมต่อ
@@ -554,91 +619,21 @@ export default function SettingsPage() {
           </div>
         </Panel>
 
-        {/* 2) โมเดลที่ใช้ */}
-        <Panel
-          icon={<Server size={18} />}
-          title="โมเดลที่ใช้ในระบบ"
-          description="เลือกการเชื่อมต่อและโมเดลสำหรับแต่ละหน้าที่"
-          action={
-            <div className="flex items-center gap-3">
-              {modelsNotice && <span className="flex items-center gap-1 text-xs text-brand-700"><CheckCircle2 size={14} /> {modelsNotice}</span>}
-              <Button onClick={() => handleSaveModels(false)} disabled={savingModels}>
-                {savingModels ? <Loader2 size={15} className="animate-spin" /> : <Save size={15} />} บันทึกโมเดล
-              </Button>
-            </div>
-          }
-        >
-          <ModelRow
-            role="llm"
-            title="LLM (ตอบคำถาม)"
-            description="อ่าน context แล้วตอบผู้ใช้ และช่วยจัดข้อมูลตอนอัปโหลดเอกสาร"
-            value={models.llm}
-            connections={connections}
-            models={modelLists[models.llm.provider]}
-            loadingModels={loadingList === models.llm.provider}
-            onProvider={(pid) => patchModel("llm", { provider: pid, model: "" })}
-            onModel={(m) => patchModel("llm", { model: m })}
-            onLoadModels={() => loadModels(models.llm.provider)}
-          />
-
-          <ModelRow
-            role="embedding"
-            title="Embedding (ค้นหาเอกสาร)"
-            description="แปลงเอกสารเป็นเวกเตอร์ — KB ผูกกับโมเดลที่ใช้ตอนสร้าง"
-            value={models.embedding}
-            connections={connections}
-            models={modelLists[models.embedding.provider]}
-            loadingModels={loadingList === models.embedding.provider}
-            onProvider={(pid) => patchModel("embedding", { provider: pid, model: "" })}
-            onModel={(m) => patchModel("embedding", { model: m })}
-            onLoadModels={() => loadModels(models.embedding.provider)}
-          >
-            <div className="grid gap-3 sm:grid-cols-2">
-              <Field label="จำนวนมิติ (dim)">
-                <div className="flex gap-2">
-                  <input type="number" min={1} className="field" value={models.embedding.dim || ""} onChange={(e) => patchModel("embedding", { dim: Number(e.target.value) })} />
-                  <Button variant="secondary" onClick={handleCheckDim} disabled={checkingDim || !models.embedding.model} className="shrink-0 px-3">
-                    {checkingDim ? <Loader2 size={14} className="animate-spin" /> : "ตรวจ"}
-                  </Button>
-                </div>
-              </Field>
-              <div className="flex items-end pb-2">
-                {dimCheck && (detectedDim && detectedDim !== Number(models.embedding.dim) ? (
-                  <button type="button" onClick={() => patchModel("embedding", { dim: detectedDim })} className="text-left text-xs font-medium text-amber-700 underline">
-                    โมเดลนี้ให้ {detectedDim} มิติ — กดเพื่อใช้ค่านี้
-                  </button>
-                ) : (
-                  <Result item={dimCheck} okText={detectedDim ? `ถูกต้อง · ${detectedDim} มิติ` : undefined} />
-                ))}
-              </div>
-            </div>
-            {kbCount > 0 && (
-              <p className={`flex items-start gap-2 rounded-lg px-3 py-2.5 text-xs ${embeddingChanged ? "bg-amber-50 text-amber-800 ring-1 ring-inset ring-amber-200" : "bg-accent-50 text-accent-600"}`}>
-                {embeddingChanged ? <AlertTriangle size={14} className="mt-px shrink-0" /> : <Lock size={14} className="mt-px shrink-0" />}
-                {embeddingChanged
-                  ? `กำลังเปลี่ยน embedding — KB ที่มีอยู่ ${kbCount} รายการจะค้นหาไม่ได้ ต้องสร้าง KB ใหม่และอัปโหลดเอกสารใหม่`
-                  : `ล็อกอยู่กับ ${savedEmbedding?.model} (${savedEmbedding?.dim} มิติ) เพราะมี KB ${kbCount} รายการใช้อยู่`}
-              </p>
-            )}
-          </ModelRow>
-
-          <ModelRow
-            role="rerank"
-            title="Rerank (ไม่บังคับ)"
-            description="จัดอันดับผลค้นหาใหม่ให้แม่นขึ้น ใช้กับบอทที่เปิด ‘ใช้ Rerank’ (ต้องเป็นการเชื่อมต่อที่มี endpoint /rerank เช่น SiliconFlow)"
-            value={models.rerank}
-            connections={connections}
-            models={modelLists[models.rerank.provider]}
-            loadingModels={loadingList === models.rerank.provider}
-            onProvider={(pid) => patchModel("rerank", { provider: pid, model: "" })}
-            onModel={(m) => patchModel("rerank", { model: m })}
-            onLoadModels={() => loadModels(models.rerank.provider)}
-          >
-            <label className="flex items-center gap-2 text-sm text-accent-700">
-              <input type="checkbox" checked={models.rerank.enabled} onChange={(e) => patchModel("rerank", { enabled: e.target.checked })} className="h-4 w-4 rounded border-accent-300 text-brand-600 focus:ring-brand-500" />
-              เปิดใช้ Rerank
-            </label>
-          </ModelRow>
+        {/* 2) คลังโมเดล */}
+        <Panel icon={<Server size={18} />} title="คลังโมเดล" description="เพิ่มได้หลายตัวในแต่ละประเภท และเลือกค่าเริ่มต้น — การเลือกใช้จริงอยู่ที่หน้า KB และหน้า Chatbots">
+          {(["llm", "embedding", "rerank"] as ModelRole[]).map((kind) => (
+            <ModelGroup
+              key={kind}
+              kind={kind}
+              models={modelsOf(kind)}
+              onAdd={() => setEditingModel({ kind, model: null })}
+              onEdit={(m) => setEditingModel({ kind, model: m })}
+              onDefault={(m) => act(() => setDefaultModel(m.id))}
+              onDelete={(m) => {
+                if (window.confirm(`ลบ ‘${m.name}’ ออกจากคลังโมเดล?`)) act(() => deleteModel(m.id));
+              }}
+            />
+          ))}
         </Panel>
 
         {/* 3) โครงสร้างพื้นฐาน */}
@@ -674,30 +669,11 @@ export default function SettingsPage() {
         </Panel>
       </div>
 
-      {editing && (
-        <ConnectionModal
-          conn={editing === "new" ? null : editing}
-          protocols={protocols}
-          onClose={() => setEditing(null)}
-          onSaved={async () => {
-            const id = editing === "new" ? null : editing.id;
-            await load();
-            if (id) setModelLists((m) => { const n = { ...m }; delete n[id]; return n; });
-          }}
-        />
+      {editingConn && (
+        <ConnectionModal conn={editingConn === "new" ? null : editingConn} protocols={protocols} onClose={() => setEditingConn(null)} onSaved={load} />
       )}
-
-      {confirm && (
-        <Modal title="ยืนยันการเปลี่ยน embedding" onClose={() => setConfirm(null)}>
-          <div className="flex flex-col gap-4 text-sm text-accent-700">
-            <p>KB ต่อไปนี้สร้างด้วย embedding ตัวเดิม หลังเปลี่ยนแล้วจะค้นหาไม่ได้และอัปโหลดเพิ่มไม่ได้ ต้องสร้าง KB ใหม่แล้วอัปโหลดเอกสารใหม่:</p>
-            <ul className="list-disc space-y-1 pl-5">{confirm.map((n) => <li key={n}>{n}</li>)}</ul>
-            <div className="flex justify-end gap-2">
-              <Button variant="secondary" onClick={() => setConfirm(null)}>ยกเลิก</Button>
-              <Button onClick={() => handleSaveModels(true)} disabled={savingModels}>เปลี่ยน embedding</Button>
-            </div>
-          </div>
-        </Modal>
+      {editingModel && (
+        <ModelModal kind={editingModel.kind} model={editingModel.model} connections={connections} onClose={() => setEditingModel(null)} onSaved={load} />
       )}
     </div>
   );

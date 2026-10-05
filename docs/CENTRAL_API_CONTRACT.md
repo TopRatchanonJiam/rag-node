@@ -10,6 +10,7 @@
 > - ingest ใช้ `POST /v1/ingest/file` (payload JSON ใน form field `payload` + `file`); `/v1/ingest/records` ยังไม่ทำ
 > - เพิ่ม `POST /v1/kb/stats`; cache ที่ส่งไป-กลับใน `ctx.cache` มี 4 ชื่อ: `entity_registry`, `kb_schema`, `component`, `sensitivity_recheck`
 > - export ส่งกลับใน `done.export.content_base64`
+> - **embedding ต่อ KB** (`features: per_kb_embedding` ใน `/v1/meta`): แต่ละ KB ใน `bot.kbs` / `kb` แนบ `credentials` (provider/model/api_key/base_url ของ embedding ที่ KB นั้นผูกไว้) ได้ — central สร้าง embedding แยกต่อ KB บอทหนึ่งตัวจึงผูก KB ที่ใช้ embedding ต่างกันได้ ถ้าไม่แนบ ใช้ `ctx.credentials.embedding` ตามเดิม
 
 ---
 

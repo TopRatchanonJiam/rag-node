@@ -139,20 +139,28 @@ export default function AdminOverviewPage() {
         </Panel>
 
         <Panel
-          title="โมเดลที่ใช้อยู่"
+          title="ค่าเริ่มต้นของโมเดล"
           action={
             <Link href="/admin/settings/" className="flex items-center gap-1 text-xs font-medium text-brand-700 hover:underline">
               <PlugZap size={13} /> แก้ไข
             </Link>
           }
         >
-          <Row label="LLM">
-            {status.provider_labels?.[status.models.llm.provider] ?? status.models.llm.provider} · <span className="font-mono text-xs">{status.models.llm.model}</span>
-          </Row>
-          <Row label="Embedding">
-            {status.provider_labels?.[status.models.embedding.provider] ?? status.models.embedding.provider} · <span className="font-mono text-xs">{status.models.embedding.model}</span> · {status.models.embedding.dim} มิติ
-          </Row>
-          <Row label="Rerank">{status.models.rerank ? "เปิด" : "ปิด"}</Row>
+          {(["llm", "embedding", "rerank"] as const).map((k) => {
+            const d = status.defaults[k];
+            return (
+              <Row key={k} label={{ llm: "LLM", embedding: "Embedding", rerank: "Rerank" }[k]}>
+                {d ? (
+                  <>
+                    {d.name} <span className="text-xs text-accent-400">· {d.provider_name}{d.dim ? ` · ${d.dim} มิติ` : ""}</span>
+                  </>
+                ) : (
+                  <span className="text-xs text-accent-400">ยังไม่มี</span>
+                )}
+                <span className="ml-1.5 text-[11px] text-accent-400">({status.model_counts[k]} ในคลัง)</span>
+              </Row>
+            );
+          })}
           <Row label="เอกสารทั้งหมด">
             {status.counts.files.toLocaleString()} ไฟล์ · {status.counts.chunks.toLocaleString()} chunks
           </Row>

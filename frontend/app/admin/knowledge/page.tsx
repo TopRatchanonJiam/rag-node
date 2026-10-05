@@ -15,8 +15,9 @@ import {
   deleteKnowledgeBase,
   uploadKnowledgeBaseFile,
   deleteKnowledgeBaseFile,
+  getSettings,
 } from "@/lib/api";
-import type { KnowledgeBase } from "@/lib/types";
+import type { KnowledgeBase, RegistryModel } from "@/lib/types";
 
 export default function KnowledgeBasesPage() {
   const [kbs, setKbs] = useState<KnowledgeBase[]>([]);
@@ -30,6 +31,8 @@ export default function KnowledgeBasesPage() {
   const [newName, setNewName] = useState("");
   const [newDescription, setNewDescription] = useState("");
   const [creating, setCreating] = useState(false);
+  const [embeddings, setEmbeddings] = useState<RegistryModel[]>([]);
+  const [newEmbedding, setNewEmbedding] = useState("");
 
   const [uploading, setUploading] = useState(false);
   const [deletingFile, setDeletingFile] = useState<string | null>(null);
@@ -43,6 +46,16 @@ export default function KnowledgeBasesPage() {
       setSelectedId(knowledge_bases[0].id);
     }
   }
+
+  useEffect(() => {
+    getSettings()
+      .then(({ settings }) => {
+        const embs = settings.models.filter((m) => m.kind === "embedding");
+        setEmbeddings(embs);
+        setNewEmbedding(embs.find((m) => m.is_default)?.id ?? embs[0]?.id ?? "");
+      })
+      .catch(() => setEmbeddings([]));
+  }, []);
 
   useEffect(() => {
     refreshList()
@@ -68,7 +81,7 @@ export default function KnowledgeBasesPage() {
     setCreating(true);
     setError(null);
     try {
-      const kb = await createKnowledgeBase(newName.trim(), newDescription.trim());
+      const kb = await createKnowledgeBase(newName.trim(), newDescription.trim(), newEmbedding);
       setShowCreate(false);
       setNewName("");
       setNewDescription("");
@@ -189,7 +202,26 @@ export default function KnowledgeBasesPage() {
                 className="w-full resize-none rounded-lg border border-slate-200 px-3 py-2 text-sm focus:border-brand-400 focus:outline-none focus:ring-1 focus:ring-brand-400"
               />
             </div>
-            <Button onClick={handleCreate} disabled={!newName.trim() || creating} className="self-end">
+            <div>
+              <label className="mb-1 block text-xs font-medium text-slate-500">Embedding (ผูกกับ KB นี้ถาวร)</label>
+              {embeddings.length === 0 ? (
+                <p className="rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-800">ยังไม่มีโมเดล embedding — เพิ่มที่หลังบ้าน → การเชื่อมต่อ AI → คลังโมเดล</p>
+              ) : (
+                <select
+                  value={newEmbedding}
+                  onChange={(e) => setNewEmbedding(e.target.value)}
+                  className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm focus:border-brand-400 focus:outline-none focus:ring-1 focus:ring-brand-400"
+                >
+                  {embeddings.map((m) => (
+                    <option key={m.id} value={m.id}>
+                      {m.name} ({m.dim} มิติ){m.is_default ? " — ค่าเริ่มต้น" : ""}
+                    </option>
+                  ))}
+                </select>
+              )}
+              <p className="mt-1 text-xs text-slate-400">เปลี่ยนทีหลังไม่ได้ — ถ้าจะใช้ embedding อื่นต้องสร้าง KB ใหม่</p>
+            </div>
+            <Button onClick={handleCreate} disabled={!newName.trim() || creating || embeddings.length === 0} className="self-end">
               {creating ? <Loader2 size={15} className="animate-spin" /> : null}
               สร้าง
             </Button>

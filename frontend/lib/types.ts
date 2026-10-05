@@ -35,8 +35,8 @@ export interface KnowledgeBase {
   file_count: number;
   chunk_count: number;
   files?: KbFile[];
-  embedding?: { provider?: string; model?: string; dim?: number };
-  embedding_matches?: boolean;
+  embedding?: { model_id?: string; model?: string; dim?: number; name?: string };
+  embedding_available?: boolean;
 }
 
 export interface SkillPreview {
@@ -69,6 +69,10 @@ export interface Chatbot {
   last_chatted_at: string | null;
   quick_chat_enabled: boolean;
   quick_chat_tags: string[];
+  llm_model_id: string;
+  rerank_model_id: string;
+  llm_name: string | null;
+  rerank_name: string | null;
 }
 
 
@@ -103,15 +107,22 @@ export interface ProviderConn {
   configured: boolean;
 }
 
-export interface ModelsSettings {
-  llm: { provider: string; model: string };
-  embedding: { provider: string; model: string; dim: number };
-  rerank: { provider: string; model: string; enabled: boolean };
+export interface RegistryModel {
+  id: string;
+  name: string;
+  kind: ModelRole;
+  provider: string;
+  provider_name: string;
+  model: string;
+  dim?: number;
+  is_default: boolean;
+  used_by: { kbs: string[]; bots: string[] };
 }
 
 export interface NodeSettings {
   providers: ProviderConn[];
-  models: ModelsSettings;
+  models: RegistryModel[];
+  defaults: Record<ModelRole, string | null>;
   vector: { url: string; api_key: SecretMask };
   central: { url: string; license_key: SecretMask };
 }
@@ -148,15 +159,13 @@ export interface Usage {
   requests: number;
 }
 
+export type DefaultModelInfo = { id: string; name: string; model: string; dim?: number | null; provider_name: string } | null;
+
 export interface AdminStatus {
   central: CheckItem & { url: string; api_version?: string };
   license: CheckResult["license"];
-  models: {
-    llm: { provider: string; model: string };
-    embedding: { provider: string; model: string; dim: number };
-    rerank: boolean;
-  };
+  defaults: Record<ModelRole, DefaultModelInfo>;
+  model_counts: Record<ModelRole, number>;
   counts: { kbs: number; files: number; chunks: number; bots: number; skills: number };
   usage: Usage;
-  provider_labels: Record<string, string>;
 }

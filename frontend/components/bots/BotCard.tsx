@@ -17,6 +17,10 @@ export function BotCard({
       <div>
         <h3 className="font-semibold text-slate-900">{bot.name}</h3>
         {bot.description && <p className="mt-1 text-sm text-slate-500">{bot.description}</p>}
+        <p className="mt-1 text-xs text-slate-400">
+          LLM: {bot.llm_name ?? "—"}{bot.llm_model_id ? "" : " (ค่าเริ่มต้น)"}
+          {bot.use_rerank ? ` · Rerank: ${bot.rerank_name ?? "—"}` : ""}
+        </p>
       </div>
 
       <div className="flex flex-wrap gap-1.5">

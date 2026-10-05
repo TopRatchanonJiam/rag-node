@@ -212,21 +212,6 @@ PROTOCOLS: dict[str, dict] = {
     "ollama": {"label": "Ollama", "needs_url": True, "key": "none", "hint": "เช่น http://192.168.1.10:11434 (ไม่ต้องใส่ /v1)"},
 }
 
-# แม่แบบสำหรับกรอกให้อัตโนมัติตอนเพิ่มการเชื่อมต่อ — ไม่ได้จำกัดว่าต่อได้แค่นี้ ("กำหนดเอง" ใช้กับเจ้าใดก็ได้)
-PRESETS: list[dict] = [
-    {"id": "gemini", "name": "Google Gemini", "type": "google", "base_url": "https://generativelanguage.googleapis.com"},
-    {"id": "openai", "name": "OpenAI", "type": "openai_compatible", "base_url": "https://api.openai.com/v1"},
-    {"id": "siliconflow", "name": "SiliconFlow", "type": "openai_compatible", "base_url": "https://api.siliconflow.com/v1"},
-    {"id": "openrouter", "name": "OpenRouter", "type": "openai_compatible", "base_url": "https://openrouter.ai/api/v1"},
-    {"id": "groq", "name": "Groq", "type": "openai_compatible", "base_url": "https://api.groq.com/openai/v1"},
-    {"id": "deepseek", "name": "DeepSeek", "type": "openai_compatible", "base_url": "https://api.deepseek.com/v1"},
-    {"id": "together", "name": "Together AI", "type": "openai_compatible", "base_url": "https://api.together.xyz/v1"},
-    {"id": "mistral", "name": "Mistral AI", "type": "openai_compatible", "base_url": "https://api.mistral.ai/v1"},
-    {"id": "ollama", "name": "Ollama", "type": "ollama", "base_url": "http://localhost:11434"},
-    {"id": "lmstudio", "name": "LM Studio", "type": "openai_compatible", "base_url": "http://localhost:1234/v1"},
-    {"id": "custom", "name": "กำหนดเอง", "type": "openai_compatible", "base_url": ""},
-]
-
 # สำหรับแปลงการตั้งค่ารุ่นก่อนที่ผูก id ตายตัว
 _LEGACY_PROVIDERS = {
     "google": ("Google Gemini", "google", ""),
@@ -648,7 +633,7 @@ def healthz():
 @app.get("/api/admin/settings")
 def get_settings():
     s = load_settings()
-    return {"settings": public_settings(s), "protocols": PROTOCOLS, "presets": PRESETS, "kb_count": len(db_all("kbs"))}
+    return {"settings": public_settings(s), "protocols": PROTOCOLS, "kb_count": len(db_all("kbs"))}
 
 
 class ProviderIn(BaseModel):

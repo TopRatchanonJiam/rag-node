@@ -1,4 +1,4 @@
-import type { AdminStatus, Chatbot, CheckResult, KnowledgeBase, NodeSettings, ProtocolId, ProtocolInfo, ProviderConn, ProviderModel, ProviderPreset, SkillSet } from "./types";
+import type { AdminStatus, Chatbot, CheckResult, KnowledgeBase, NodeSettings, ProtocolId, ProtocolInfo, ProviderConn, ProviderModel, SkillSet } from "./types";
 
 // หน้าเว็บถูกเสิร์ฟจาก node ตัวเดียวกับ API (origin เดียวกัน) — ใช้ path แบบ relative
 export const API_BASE = (process.env.NEXT_PUBLIC_API_URL || "").replace(/\/$/, "");
@@ -204,7 +204,6 @@ export type SettingsInput = {
 export async function getSettings(): Promise<{
   settings: NodeSettings;
   protocols: Record<ProtocolId, ProtocolInfo>;
-  presets: ProviderPreset[];
   kb_count: number;
 }> {
   return request("/api/admin/settings");

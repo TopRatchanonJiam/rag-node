@@ -44,7 +44,6 @@ import type {
   ProtocolInfo,
   ProviderConn,
   ProviderModel,
-  ProviderPreset,
   SecretMask,
 } from "@/lib/types";
 
@@ -154,17 +153,14 @@ function detectType(url: string, fallback?: ProtocolId): ProtocolId {
 function ConnectionModal({
   conn,
   protocols,
-  presets,
   onClose,
   onSaved,
 }: {
   conn: ProviderConn | null; // null = เพิ่มใหม่
   protocols: Record<ProtocolId, ProtocolInfo>;
-  presets: ProviderPreset[];
   onClose: () => void;
   onSaved: () => Promise<void>;
 }) {
-  const [picked, setPicked] = useState<boolean>(!!conn);
   const [name, setName] = useState(conn?.name ?? "");
   const [baseUrl, setBaseUrl] = useState(conn?.base_url ?? "");
   const [apiKey, setApiKey] = useState<SecretInput>("");
@@ -172,13 +168,6 @@ function ConnectionModal({
   const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
   const type = detectType(baseUrl, conn?.type);
   const proto = protocols[type];
-
-  function applyPreset(p: ProviderPreset) {
-    setName(p.id === "custom" ? "" : p.name);
-    setBaseUrl(p.base_url);
-    setPicked(true);
-    setMsg(null);
-  }
 
   const body = () => ({ name, base_url: baseUrl.trim(), api_key: apiKey === null ? null : apiKey.trim() });
 
@@ -208,44 +197,11 @@ function ConnectionModal({
     }
   }
 
-  if (!picked) {
-    return (
-      <Modal title="เพิ่มการเชื่อมต่อ" onClose={onClose} size="lg">
-        <p className="mb-3 text-sm text-accent-500">เลือกแม่แบบเพื่อกรอกให้อัตโนมัติ หรือเลือก ‘กำหนดเอง’ สำหรับผู้ให้บริการอื่นที่ใช้ API แบบ OpenAI</p>
-        <div className="grid gap-2 sm:grid-cols-3">
-          {presets.map((p) => (
-            <button
-              key={p.id}
-              type="button"
-              onClick={() => applyPreset(p)}
-              className="flex items-center gap-3 rounded-xl border border-accent-200 p-3 text-left transition-colors hover:border-brand-300 hover:bg-brand-50/40"
-            >
-              {p.id === "custom" ? (
-                <span className="flex h-9 w-9 items-center justify-center rounded-xl border border-dashed border-accent-300 text-accent-400"><Plus size={16} /></span>
-              ) : (
-                <Mark name={p.name} type={p.type} />
-              )}
-              <span className="min-w-0">
-                <span className="block truncate text-sm font-medium text-accent-900">{p.name}</span>
-                <span className="block truncate text-[11px] text-accent-400">{protocols[p.type]?.label}</span>
-              </span>
-            </button>
-          ))}
-        </div>
-      </Modal>
-    );
-  }
-
   return (
     <Modal title={conn ? `แก้ไข ${conn.name}` : "เพิ่มการเชื่อมต่อ"} onClose={onClose}>
       <div className="flex flex-col gap-4">
-        {!conn && (
-          <button type="button" onClick={() => setPicked(false)} className="flex w-fit items-center gap-1 text-xs font-medium text-accent-500 hover:text-accent-800">
-            <ArrowLeft size={13} /> เลือกแม่แบบอื่น
-          </button>
-        )}
-        <Field label="ชื่อการเชื่อมต่อ" hint="ตั้งให้จำง่าย เช่น ‘Ollama ห้อง Server’ หรือ ‘OpenRouter บัญชีบริษัท’">
-          <input className="field" value={name} onChange={(e) => setName(e.target.value)} placeholder="ชื่อ" />
+        <Field label="ชื่อ" hint="ตั้งให้จำง่าย เช่น ‘Gemini บริษัท’ หรือ ‘Ollama ห้อง Server’">
+          <input className="field" value={name} onChange={(e) => setName(e.target.value)} placeholder="ชื่อการเชื่อมต่อ" autoFocus />
         </Field>
         <Field
           label="URL"
@@ -256,7 +212,11 @@ function ConnectionModal({
             </>
           }
         >
-          <input className="field font-mono text-[13px]" value={baseUrl} onChange={(e) => setBaseUrl(e.target.value)} placeholder="https://api.example.com/v1" spellCheck={false} />
+          <input className="field font-mono text-[13px]" value={baseUrl} onChange={(e) => setBaseUrl(e.target.value)} placeholder="เช่น https://api.openai.com/v1" spellCheck={false} />
+          <p className="mt-1.5 text-[11px] leading-relaxed text-accent-400">
+            ตัวอย่าง: Gemini <span className="font-mono">https://generativelanguage.googleapis.com</span> · Ollama{" "}
+            <span className="font-mono">http://192.168.1.10:11434</span> · SiliconFlow <span className="font-mono">https://api.siliconflow.com/v1</span>
+          </p>
         </Field>
         <SecretField
           label={type === "ollama" ? "API key (ไม่ต้องใส่สำหรับ Ollama)" : "API key"}
@@ -373,7 +333,6 @@ function ModelRow({
 export default function SettingsPage() {
   const [settings, setSettings] = useState<NodeSettings | null>(null);
   const [protocols, setProtocols] = useState<Record<ProtocolId, ProtocolInfo> | null>(null);
-  const [presets, setPresets] = useState<ProviderPreset[]>([]);
   const [kbCount, setKbCount] = useState(0);
   const [error, setError] = useState<string | null>(null);
 
@@ -401,7 +360,6 @@ export default function SettingsPage() {
     const res = await getSettings();
     setSettings(res.settings);
     setProtocols(res.protocols);
-    setPresets(res.presets);
     setKbCount(res.kb_count);
     setModels(res.settings.models);
     setVectorUrl(res.settings.vector.url);
@@ -720,7 +678,6 @@ export default function SettingsPage() {
         <ConnectionModal
           conn={editing === "new" ? null : editing}
           protocols={protocols}
-          presets={presets}
           onClose={() => setEditing(null)}
           onSaved={async () => {
             const id = editing === "new" ? null : editing.id;

@@ -233,6 +233,13 @@ export async function streamChatWithBot(
   }
 }
 
+// ถอดเสียงจากปุ่มไมค์ — node ส่งต่อให้ central พร้อมโมเดลถอดเสียงของบอท
+export async function transcribeAudio(botId: string, audio: Blob): Promise<{ text: string }> {
+  const formData = new FormData();
+  formData.append("file", audio, "voice.wav");
+  return request(`/api/bots/${encodeURIComponent(botId)}/transcribe`, { method: "POST", body: formData });
+}
+
 // ── หลังบ้าน: การเชื่อมต่อ / สถานะ ──────────────────────
 
 // ค่าที่ส่งไปบันทึก (ส่งเฉพาะส่วนที่แก้) — ช่อง key: ไม่ส่ง/ว่าง = ใช้ค่าเดิม, null = ลบ
@@ -280,7 +287,7 @@ export async function saveSettings(settings: SettingsInput): Promise<{ settings:
 
 // ── คลังโมเดล ────────────────────────────────────────
 
-export type ModelInput = { name: string; kind: ModelRole; provider: string; model: string; dim?: number; make_default?: boolean };
+export type ModelInput = { name: string; kind: ModelRole; provider: string; model: string; dim?: number; make_default?: boolean; params?: string };
 
 export async function createModel(body: ModelInput): Promise<{ id: string }> {
   return request("/api/admin/models", { method: "POST", body: JSON.stringify(body) });
@@ -298,7 +305,7 @@ export async function setDefaultModel(id: string): Promise<{ message: string }> 
   return request(`/api/admin/models/${encodeURIComponent(id)}/default`, { method: "POST" });
 }
 
-export async function testModel(body: { kind: ModelRole; provider: string; model: string }): Promise<CheckItem> {
+export async function testModel(body: { kind: ModelRole; provider: string; model: string; params?: string }): Promise<CheckItem> {
   return request("/api/admin/models/test", { method: "POST", body: JSON.stringify(body) });
 }
 

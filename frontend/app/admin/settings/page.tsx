@@ -4,6 +4,7 @@ import { useCallback, useEffect, useState, type ReactNode } from "react";
 import {
   Boxes,
   CheckCircle2,
+  ChevronDown,
   Cpu,
   Database,
   KeyRound,
@@ -11,6 +12,7 @@ import {
   Loader2,
   Lock,
   MessageSquare,
+  Mic,
   Pencil,
   Plus,
   RefreshCw,
@@ -263,6 +265,25 @@ const KIND_INFO: Record<ModelRole, { label: string; title: string; description: 
   llm: { label: "LLM", title: "LLM (ตอบคำถาม)", description: "บอทแต่ละตัวเลือกใช้ได้ — ไม่เลือก = ใช้ค่าเริ่มต้น และใช้จัดข้อมูลตอนอัปโหลดเอกสาร" },
   embedding: { label: "Embedding", title: "Embedding (ค้นหาเอกสาร)", description: "เลือกตอนสร้าง KB แล้ว KB ผูกกับตัวนั้นตลอด — ลบได้เมื่อไม่มี KB ใช้แล้ว" },
   rerank: { label: "Rerank", title: "Rerank (ไม่บังคับ)", description: "ใช้กับบอทที่เปิด ‘ใช้ Rerank’ — ต้องเป็นการเชื่อมต่อที่มี endpoint /rerank เช่น SiliconFlow" },
+  stt: { label: "Speech-to-Text", title: "Speech-to-Text (ไม่บังคับ)", description: "ถอดเสียงจากปุ่มไมค์ในหน้าแชท — ใช้ Gemini หรือเจ้าที่มี /audio/transcriptions เช่น Whisper" },
+};
+
+// ตัวอย่างเท่านั้น (กดแล้วเติมให้แก้ต่อ) — ช่องรับ JSON อะไรก็ได้ ไม่จำกัดแค่นี้
+const PARAM_EXAMPLES: Record<ModelRole, [string, string][]> = {
+  llm: [
+    ["ปิดโหมดคิด · Gemini 2.5", '{"thinking_budget": 0}'],
+    ["ลดการคิด · Gemini 3", '{"thinking_level": "low"}'],
+    ["ปิดโหมดคิด · Qwen3 / vLLM", '{"enable_thinking": false}'],
+    ["ลดการคิด · OpenAI / GPT-5", '{"reasoning_effort": "minimal"}'],
+    ["Ollama ไม่คิด", '{"think": false}'],
+    ["ตอบนิ่งขึ้น", '{"temperature": 0.2}'],
+  ],
+  embedding: [
+    ["ลดมิติ (OpenAI-compatible)", '{"dimensions": 1024}'],
+    ["Gemini สำหรับเอกสาร", '{"task_type": "RETRIEVAL_DOCUMENT"}'],
+  ],
+  rerank: [["ตัดเอกสารยาว", '{"max_chunks_per_doc": 8}']],
+  stt: [["ระบุภาษา", '{"language": "th"}']],
 };
 
 function ModelModal({
@@ -278,7 +299,8 @@ function ModelModal({
   onClose: () => void;
   onSaved: () => Promise<void>;
 }) {
-  const options = kind === "rerank" ? connections.filter((c) => c.type !== "google") : connections;
+  const options =
+    kind === "rerank" ? connections.filter((c) => c.type !== "google") : kind === "stt" ? connections.filter((c) => c.type !== "ollama") : connections;
   const [name, setName] = useState(model?.name ?? "");
   const [provider, setProvider] = useState(model?.provider ?? options.find((c) => c.configured)?.id ?? "");
   const [modelId, setModelId] = useState(model?.model ?? "");
@@ -288,6 +310,8 @@ function ModelModal({
   const [loadingList, setLoadingList] = useState(false);
   const [busy, setBusy] = useState<"test" | "save" | null>(null);
   const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
+  const [paramsText, setParamsText] = useState(model?.params && Object.keys(model.params).length ? JSON.stringify(model.params, null, 2) : "");
+  const [showParams, setShowParams] = useState(!!paramsText);
   const lockedByKb = kind === "embedding" && !!model?.used_by.kbs.length;
 
   useEffect(() => {
@@ -307,10 +331,16 @@ function ModelModal({
     setBusy("test");
     setMsg(null);
     try {
-      const r = await testModel({ kind, provider, model: modelId });
+      const r = await testModel({ kind, provider, model: modelId, params: paramsText });
       if (r.ok && kind === "embedding" && typeof r.dim === "number") {
         setDim(r.dim);
         setMsg({ ok: true, text: `ใช้งานได้ — โมเดลนี้ให้ ${r.dim} มิติ (ใส่ให้แล้ว)` });
+      } else if (r.ok && kind === "llm" && typeof r.latency_ms === "number") {
+        const thinking = Number(r.reasoning_tokens || 0);
+        setMsg({
+          ok: true,
+          text: `ใช้งานได้ — ตอบใน ${(r.latency_ms / 1000).toFixed(1)} วิ · ${thinking > 0 ? `ใช้ token คิด ${thinking} token (เสียเวลาและเงินเพิ่ม)` : "ไม่ได้ใช้โหมดคิด"}`,
+        });
       } else {
         setMsg({ ok: !!r.ok, text: r.ok ? "ใช้งานได้" : String(r.message ?? r.error_code ?? "ใช้งานไม่ได้") });
       }
@@ -325,7 +355,7 @@ function ModelModal({
     setBusy("save");
     setMsg(null);
     try {
-      const body = { name: name.trim() || modelId.trim(), kind, provider, model: modelId.trim(), dim, make_default: makeDefault };
+      const body = { name: name.trim() || modelId.trim(), kind, provider, model: modelId.trim(), dim, make_default: makeDefault, params: paramsText };
       if (model) await updateModel(model.id, body);
       else await createModel(body);
       await onSaved();
@@ -369,6 +399,43 @@ function ModelModal({
             <Field label="ชื่อที่แสดง (ไม่บังคับ)" hint="เว้นว่าง = ใช้ชื่อโมเดล">
               <input className="field" value={name} onChange={(e) => setName(e.target.value)} placeholder={modelId || "เช่น Gemini เร็ว"} />
             </Field>
+            <div>
+              <button type="button" onClick={() => setShowParams(!showParams)} className="flex items-center gap-1 text-xs font-medium text-accent-500 hover:text-accent-800">
+                <ChevronDown size={14} className={`transition-transform ${showParams ? "rotate-180" : ""}`} /> พารามิเตอร์เพิ่มเติม (ขั้นสูง)
+                {paramsText.trim() && !showParams && <span className="ml-1 rounded bg-brand-50 px-1.5 text-[10px] text-brand-700">ตั้งไว้</span>}
+              </button>
+              {showParams && (
+                <div className="mt-2">
+                  <textarea
+                    className="field h-28 font-mono text-[12px]"
+                    value={paramsText}
+                    disabled={lockedByKb}
+                    onChange={(e) => { setParamsText(e.target.value); setMsg(null); }}
+                    placeholder={PARAM_EXAMPLES[kind][0]?.[1] ?? "{}"}
+                    spellCheck={false}
+                  />
+                  <p className="mt-1 text-[11px] leading-relaxed text-accent-400">
+                    {lockedByKb
+                      ? "ผูกกับ KB อยู่ — แก้ไม่ได้ (บางพารามิเตอร์ทำให้ vector เปลี่ยน)"
+                      : "ส่งต่อให้ผู้ให้บริการตรง ๆ ใช้ได้กับทุกโมเดล — ชื่อพารามิเตอร์ดูจากเอกสารของผู้ให้บริการ · ใส่ \"headers\" / \"query\" เพื่อเพิ่ม HTTP header หรือ query string"}
+                  </p>
+                  {!lockedByKb && (
+                    <div className="mt-2 flex flex-wrap gap-1.5">
+                      {PARAM_EXAMPLES[kind].map(([label, json]) => (
+                        <button
+                          key={label}
+                          type="button"
+                          onClick={() => { setParamsText(json); setMsg(null); }}
+                          className="rounded-full bg-accent-100 px-2.5 py-1 text-[11px] text-accent-600 hover:bg-brand-50 hover:text-brand-700"
+                        >
+                          {label}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
             {!model?.is_default && (
               <label className="flex items-center gap-2 text-sm text-accent-700">
                 <input type="checkbox" checked={makeDefault} onChange={(e) => setMakeDefault(e.target.checked)} className="h-4 w-4 rounded border-accent-300 text-brand-600 focus:ring-brand-500" />
@@ -402,12 +469,17 @@ const KIND_STYLE: Record<ModelRole, { icon: ReactNode; tile: string; ring: strin
   llm: { icon: <MessageSquare size={18} />, tile: "bg-violet-100 text-violet-700", ring: "border-violet-200" },
   embedding: { icon: <Search size={18} />, tile: "bg-sky-100 text-sky-700", ring: "border-sky-200" },
   rerank: { icon: <ListOrdered size={18} />, tile: "bg-amber-100 text-amber-700", ring: "border-amber-200" },
+  stt: { icon: <Mic size={18} />, tile: "bg-emerald-100 text-emerald-700", ring: "border-emerald-200" },
 };
 
 const KIND_PLAIN: Record<ModelRole, { what: string; where: string }> = {
   llm: { what: "สมองของบอท — อ่านเอกสารแล้วเรียบเรียงคำตอบ", where: "เลือกใช้ที่หน้า Chatbots" },
   embedding: { what: "แปลงเอกสารเป็นตัวเลขเพื่อค้นหา — KB ผูกกับตัวที่เลือกตอนสร้างตลอดไป", where: "เลือกใช้ตอนสร้าง Knowledge Base" },
   rerank: { what: "จัดลำดับผลค้นหาให้แม่นขึ้น (ไม่บังคับ) — ต้องเป็นเจ้าที่มี /rerank เช่น SiliconFlow", where: "ใช้กับบอทที่เปิด ‘ใช้ Rerank’" },
+  stt: {
+    what: "ถอดเสียงพูดเป็นข้อความ (ไม่บังคับ) — ไม่ตั้งไว้ บอทที่ใช้ LLM เป็น Gemini จะถอดเสียงเองได้",
+    where: "ปุ่มไมค์ในหน้าแชท",
+  },
 };
 
 function lockReason(kind: ModelRole, m: RegistryModel): string | null {
@@ -449,7 +521,7 @@ function ModelGroup({
         {models.length === 0 && (
           <p className="rounded-lg bg-accent-50 px-3 py-3 text-center text-xs text-accent-500">
             ยังไม่มี {info.label}
-            {kind !== "rerank" && <span className="mt-0.5 block font-medium text-amber-700">ต้องมีอย่างน้อย 1 ตัว ระบบถึงจะทำงาน</span>}
+            {(kind === "llm" || kind === "embedding") && <span className="mt-0.5 block font-medium text-amber-700">ต้องมีอย่างน้อย 1 ตัว ระบบถึงจะทำงาน</span>}
           </p>
         )}
         {models.map((m) => {
@@ -704,7 +776,7 @@ export default function SettingsPage() {
     <div>
       <PageHeader
         title="การเชื่อมต่อ AI"
-        description="เพิ่มการเชื่อมต่อและโมเดลไว้เป็นตัวเลือก — KB เลือก embedding ตอนสร้าง ส่วนบอทเลือก LLM/rerank ได้เอง (ไม่เลือก = ใช้ค่าเริ่มต้น)"
+        description="เพิ่มการเชื่อมต่อและโมเดลไว้เป็นตัวเลือก — KB เลือก embedding ตอนสร้าง ส่วนบอทเลือก LLM/rerank ได้เอง (ไม่เลือก = ใช้ค่าเริ่มต้น) และปุ่มไมค์ในแชทใช้ Speech-to-Text ค่าเริ่มต้น"
         actions={
           <Button variant="secondary" onClick={handleCheckAll} disabled={checking}>
             {checking ? <Loader2 size={15} className="animate-spin" /> : <RefreshCw size={15} />} ตรวจค่าเริ่มต้นทั้งระบบ
@@ -714,7 +786,7 @@ export default function SettingsPage() {
       <ErrorNote message={error} />
 
       {check && (
-        <div className="mb-5 grid gap-2 rounded-xl border border-accent-200 bg-white p-4 sm:grid-cols-3 lg:grid-cols-6">
+        <div className="mb-5 grid gap-2 rounded-xl border border-accent-200 bg-white p-4 sm:grid-cols-3 lg:grid-cols-7">
           {([
             ["central", check.central],
             ["license", check.license],
@@ -722,6 +794,7 @@ export default function SettingsPage() {
             ["Embedding", check.embedding],
             ["Qdrant", check.vector],
             ["Rerank", check.rerank],
+            ["Speech-to-Text", check.stt],
           ] as [string, CheckItem | undefined][]).map(([label, item]) => (
             <div key={label} className="min-w-0 rounded-lg bg-accent-50 px-3 py-2">
               <p className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-accent-400">{label}</p>
@@ -777,8 +850,8 @@ export default function SettingsPage() {
           title="ขั้นที่ 2 · คลังโมเดล"
           description="เลือกโมเดลจากการเชื่อมต่อด้านบนมาเก็บไว้เป็นตัวเลือก — ตัวที่ติดดาว ‘ค่าเริ่มต้น’ จะถูกใช้เมื่อ KB/บอทไม่ได้เลือกเฉพาะ"
         >
-          <div className="grid gap-4 lg:grid-cols-3">
-            {(["llm", "embedding", "rerank"] as ModelRole[]).map((kind) => (
+          <div className="grid gap-4 md:grid-cols-2 2xl:grid-cols-4">
+            {(["llm", "embedding", "rerank", "stt"] as ModelRole[]).map((kind) => (
               <ModelGroup
                 key={kind}
                 kind={kind}

@@ -146,16 +146,16 @@ export default function AdminOverviewPage() {
             </Link>
           }
         >
-          {(["llm", "embedding", "rerank"] as const).map((k) => {
+          {(["llm", "embedding", "rerank", "stt"] as const).map((k) => {
             const d = status.defaults[k];
             return (
-              <Row key={k} label={{ llm: "LLM", embedding: "Embedding", rerank: "Rerank" }[k]}>
+              <Row key={k} label={{ llm: "LLM", embedding: "Embedding", rerank: "Rerank", stt: "Speech-to-Text" }[k]}>
                 {d ? (
                   <>
                     {d.name} <span className="text-xs text-accent-400">· {d.provider_name}{d.dim ? ` · ${d.dim} มิติ` : ""}</span>
                   </>
                 ) : (
-                  <span className="text-xs text-accent-400">ยังไม่มี</span>
+                  <span className="text-xs text-accent-400">{k === "stt" ? "ยังไม่มี (บอทที่ใช้ Gemini ถอดเสียงเองได้)" : "ยังไม่มี"}</span>
                 )}
                 <span className="ml-1.5 text-[11px] text-accent-400">({status.model_counts[k]} ในคลัง)</span>
               </Row>
@@ -176,6 +176,7 @@ export default function AdminOverviewPage() {
               ["embedding token", u.embed_tokens],
               ["เรียก embedding", u.embed_calls],
               ["เรียก rerank", u.rerank_calls],
+              ["ถอดเสียง (ครั้ง)", u.stt_calls ?? 0],
             ].map(([label, value]) => (
               <div key={label as string} className="rounded-lg bg-accent-50 px-3 py-2.5">
                 <p className="text-lg font-semibold tabular-nums text-accent-900">{(value as number).toLocaleString()}</p>

@@ -118,6 +118,7 @@ export interface Chatbot {
   welcome_icon: string;
   llm_name: string | null;
   rerank_name: string | null;
+  voice_input: { available: boolean; model_name: string | null };
 }
 
 
@@ -125,7 +126,7 @@ export interface Chatbot {
 
 export type SecretMask = { set: boolean; hint: string };
 
-export type ModelRole = "llm" | "embedding" | "rerank";
+export type ModelRole = "llm" | "embedding" | "rerank" | "stt";
 
 export type ProtocolId = "openai_compatible" | "google" | "ollama";
 
@@ -160,6 +161,7 @@ export interface RegistryModel {
   provider_name: string;
   model: string;
   dim?: number;
+  params?: Record<string, unknown>;
   is_default: boolean;
   used_by: { kbs: string[]; bots: string[] };
 }
@@ -192,6 +194,7 @@ export interface CheckResult {
   embedding?: CheckItem;
   vector?: CheckItem;
   rerank?: CheckItem;
+  stt?: CheckItem;
 }
 
 export interface Usage {
@@ -201,6 +204,8 @@ export interface Usage {
   embed_tokens: number;
   embed_calls: number;
   rerank_calls: number;
+  stt_calls: number;
+  stt_seconds: number;
   requests: number;
 }
 

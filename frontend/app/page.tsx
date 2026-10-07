@@ -6,7 +6,7 @@ import { useSearchParams } from "next/navigation";
 import { Bot, ChevronDown, Loader2, MessageSquareText, Settings2 } from "lucide-react";
 import { ChatBubble } from "@/components/chat/ChatBubble";
 import { ChatInput } from "@/components/chat/ChatInput";
-import { listBots, streamChatWithBot } from "@/lib/api";
+import { listBots, streamChatWithBot, transcribeAudio } from "@/lib/api";
 import { botIcon } from "@/lib/botIcons";
 import type { ChatMessage, Chatbot } from "@/lib/types";
 
@@ -202,7 +202,11 @@ function ChatApp() {
                 ))}
               </div>
             )}
-            <ChatInput onSend={handleSend} disabled={isTyping} />
+            <ChatInput
+              onSend={handleSend}
+              onTranscribe={activeBot.voice_input?.available ? async (audio) => (await transcribeAudio(activeBot.id, audio)).text : undefined}
+              disabled={isTyping}
+            />
           </div>
         </div>
       )}

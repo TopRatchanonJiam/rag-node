@@ -153,7 +153,8 @@ def db_delete(table: str, item_id: str) -> None:
 
 
 _USAGE_ZERO = {"llm_input_tokens": 0, "llm_output_tokens": 0, "llm_calls": 0,
-               "embed_tokens": 0, "embed_calls": 0, "rerank_calls": 0, "requests": 0}
+               "embed_tokens": 0, "embed_calls": 0, "rerank_calls": 0, "stt_calls": 0, "stt_seconds": 0.0,
+               "requests": 0}
 
 
 def get_usage() -> dict:
@@ -174,6 +175,9 @@ def add_usage(usage: dict | None) -> None:
         u["embed_tokens"] += int(emb.get("tokens") or 0)
         u["embed_calls"] += int(emb.get("calls") or 0)
         u["rerank_calls"] += int(rr.get("calls") or 0)
+        stt = usage.get("stt") or {}
+        u["stt_calls"] += int(stt.get("calls") or 0)
+        u["stt_seconds"] = round(u["stt_seconds"] + float(stt.get("audio_seconds") or 0), 2)
         u["requests"] += 1
         with _db() as c:
             c.execute("INSERT INTO usage (id, data) VALUES (1, ?) ON CONFLICT(id) DO UPDATE SET data=excluded.data",
@@ -199,14 +203,16 @@ def migrate_legacy_state() -> None:
 # ══════════════════════════════════════════════
 #
 # providers  = การเชื่อมต่อที่ผู้ใช้เพิ่มเอง {id: {name, type, base_url, api_key}}
-# registry   = คลังโมเดล {id: {name, kind (llm|embedding|rerank), provider, model, dim?}} — เพิ่มได้หลายตัวต่อประเภท
-# defaults   = ค่าเริ่มต้นต่อประเภท {llm: id, embedding: id, rerank: id}
+# registry   = คลังโมเดล {id: {name, kind (llm|embedding|rerank|stt), provider, model, dim?}} — เพิ่มได้หลายตัวต่อประเภท
+# defaults   = ค่าเริ่มต้นต่อประเภท {llm: id, embedding: id, rerank: id, stt: id}
+# stt (ถอดเสียง) ไม่บังคับ — ถ้าไม่มี ใช้ LLM ของบอทถอดแทนได้เมื่อเป็น Gemini
 # การเลือกใช้จริงอยู่ที่งาน: KB เลือก embedding ตอนสร้าง (ผูกถาวร), บอทเลือก LLM/rerank (ว่าง = ค่าเริ่มต้น)
 
 SECTIONS = ("providers", "registry", "defaults", "vector", "central")
 LEGACY_SECTIONS = ("llm", "embedding", "rerank", "models")
-KINDS = ("llm", "embedding", "rerank")
-KIND_LABEL = {"llm": "LLM", "embedding": "Embedding", "rerank": "Rerank"}
+KINDS = ("llm", "embedding", "rerank", "stt")
+LEGACY_KINDS = ("llm", "embedding", "rerank")  # การตั้งค่ารุ่นแรก (ยังไม่มี stt)
+KIND_LABEL = {"llm": "LLM", "embedding": "Embedding", "rerank": "Rerank", "stt": "Speech-to-Text"}
 SECRET_FIELDS = {"api_key", "license_key"}
 _settings_cache: dict | None = None
 
@@ -280,7 +286,7 @@ def _from_role_schema(old: dict) -> dict:
     """รุ่นแรก (llm/embedding/rerank แยกกันพร้อม key ในตัว) → providers + models (รุ่นที่สอง)"""
     providers = {pid: {"api_key": "", "base_url": ""} for pid in _LEGACY_PROVIDERS}
     models: dict = {}
-    for role in KINDS:
+    for role in LEGACY_KINDS:
         cfg = old.get(role) or {}
         pid = _provider_id_for(cfg) if (cfg.get("base_url") or role != "rerank") else "siliconflow"
         if role == "rerank" and pid not in ("siliconflow", "custom"):
@@ -512,6 +518,8 @@ def model_creds(s: dict, entry: dict | None) -> dict:
     out = {"provider": kind, "model": entry.get("model", ""), "api_key": key}
     if base:
         out["base_url"] = base
+    if entry.get("params"):
+        out["params"] = entry["params"]  # พารามิเตอร์เพิ่มเติมของโมเดล — central ส่งต่อให้ผู้ให้บริการตรง ๆ
     return out
 
 
@@ -526,7 +534,7 @@ def credentials(settings: dict | None = None, *, llm_id: str | None = None, embe
     if use_rerank:
         rr = model_creds(s, resolve_model(s, "rerank", rerank_id)[1])
         if rr:
-            creds["rerank"] = {"api_key": rr["api_key"], "model": rr["model"], "base_url": rr.get("base_url")}
+            creds["rerank"] = {"api_key": rr["api_key"], "model": rr["model"], "base_url": rr.get("base_url"), "params": rr.get("params") or {}}
     return creds
 
 
@@ -536,6 +544,8 @@ def _guess_kinds(model_id: str) -> list[str]:
     mid = model_id.lower()
     if "rerank" in mid:
         return ["rerank"]
+    if any(w in mid for w in ("whisper", "sensevoice", "transcribe", "asr", "speech-to-text", "stt")):
+        return ["stt"]
     if any(w in mid for w in ("embed", "bge-", "/bge", "e5-", "gte-", "minilm")):
         return ["embedding"]
     return ["llm"]
@@ -554,6 +564,8 @@ def list_provider_models(prov: dict) -> list[dict]:
             for m in r.json().get("models", []):
                 methods = m.get("supportedGenerationMethods", [])
                 kinds = (["llm"] if "generateContent" in methods else []) + (["embedding"] if "embedContent" in methods else [])
+                if "generateContent" in methods and m["name"].startswith("models/gemini"):
+                    kinds.append("stt")  # Gemini ถอดเสียงได้ในตัว (multimodal)
                 if kinds:
                     out.append({"id": m["name"].removeprefix("models/"), "kinds": kinds})
             return sorted(out, key=lambda x: x["id"])
@@ -811,6 +823,26 @@ class ModelIn(BaseModel):
     model: str
     dim: int = 0
     make_default: bool = False
+    params: dict | str | None = None  # JSON object หรือข้อความ JSON — ส่งต่อให้ผู้ให้บริการตรง ๆ
+
+
+PARAMS_MAX_CHARS = 8000
+
+
+def _parse_params(raw) -> dict:
+    """พารามิเตอร์เพิ่มเติมของโมเดล: รับได้ทั้ง object และข้อความ JSON (ช่องกรอกในหน้าเว็บ) — ว่าง = {}"""
+    if raw is None or raw == "" or raw == {}:
+        return {}
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except json.JSONDecodeError as e:
+            raise HTTPException(400, f"พารามิเตอร์เพิ่มเติมต้องเป็น JSON — {e.msg} (บรรทัด {e.lineno})")
+    if not isinstance(raw, dict):
+        raise HTTPException(400, 'พารามิเตอร์เพิ่มเติมต้องเป็น JSON object เช่น {"temperature": 0.2}')
+    if len(json.dumps(raw, ensure_ascii=False)) > PARAMS_MAX_CHARS:
+        raise HTTPException(400, "พารามิเตอร์เพิ่มเติมยาวเกินไป")
+    return raw
 
 
 def _model_from_input(req: ModelIn, s: dict) -> dict:
@@ -822,7 +854,12 @@ def _model_from_input(req: ModelIn, s: dict) -> dict:
         raise HTTPException(400, "ใส่ชื่อโมเดล")
     if req.kind == "rerank" and s["providers"][req.provider].get("type") == "google":
         raise HTTPException(400, "Rerank ต้องใช้การเชื่อมต่อแบบ OpenAI-compatible ที่มี endpoint /rerank")
+    if req.kind == "stt" and s["providers"][req.provider].get("type") == "ollama":
+        raise HTTPException(400, "Ollama ยังไม่มี API ถอดเสียง — ใช้ Gemini หรือเจ้าที่มี /audio/transcriptions (เช่น Whisper)")
     entry = {"name": req.name.strip() or req.model.strip(), "kind": req.kind, "provider": req.provider, "model": req.model.strip()}
+    params = _parse_params(req.params)
+    if params:
+        entry["params"] = params
     if req.kind == "embedding":
         if req.dim <= 0:
             raise HTTPException(400, "Embedding ต้องระบุจำนวนมิติ (dim) — กดตรวจเพื่อหาค่าที่ถูกต้อง")
@@ -850,8 +887,10 @@ def update_model(mid: str, req: ModelIn):
         raise HTTPException(404, "ไม่พบโมเดลนี้")
     entry = _model_from_input(ModelIn(**{**req.model_dump(), "kind": old["kind"]}), s)
     used_kbs = _model_usage().get(mid, {}).get("kbs", [])
-    if old["kind"] == "embedding" and used_kbs and (entry["model"] != old["model"] or entry["dim"] != old.get("dim")):
-        raise HTTPException(409, f"embedding นี้ผูกกับ KB อยู่ ({', '.join(used_kbs)}) — เปลี่ยนโมเดลหรือมิติไม่ได้ แก้ได้แค่ชื่อและการเชื่อมต่อ")
+    if old["kind"] == "embedding" and used_kbs and (entry["model"] != old["model"] or entry["dim"] != old.get("dim")
+                                                    or (entry.get("params") or {}) != (old.get("params") or {})):
+        # params ของ embedding อาจเปลี่ยน vector (เช่น dimensions, task_type) — เทียบกับของเดิมใน KB ไม่ได้
+        raise HTTPException(409, f"embedding นี้ผูกกับ KB อยู่ ({', '.join(used_kbs)}) — เปลี่ยนโมเดล มิติ หรือพารามิเตอร์ไม่ได้ แก้ได้แค่ชื่อและการเชื่อมต่อ")
     defaults = dict(s["defaults"])
     if req.make_default:
         defaults[old["kind"]] = mid
@@ -901,10 +940,11 @@ def test_model(body: dict = Body(...)):
     prov = s["providers"].get(body.get("provider") or "")
     if kind not in KINDS or not prov:
         raise HTTPException(400, "เลือกประเภทและการเชื่อมต่อก่อน")
-    cfg = model_creds(s, {"provider": body.get("provider"), "model": (body.get("model") or "").strip()})
+    cfg = model_creds(s, {"provider": body.get("provider"), "model": (body.get("model") or "").strip(),
+                          "params": _parse_params(body.get("params"))})
     creds = credentials(s, use_rerank=False)
     if kind == "rerank":
-        creds["rerank"] = {"api_key": cfg["api_key"], "model": cfg["model"], "base_url": cfg.get("base_url")}
+        creds["rerank"] = {"api_key": cfg["api_key"], "model": cfg["model"], "base_url": cfg.get("base_url"), "params": cfg.get("params") or {}}
     else:
         creds[kind] = cfg
     result = central_json("/v1/credentials/check", {"ctx": {"credentials": creds}})
@@ -932,8 +972,11 @@ def _run_check(settings: dict) -> dict:
         return out
     try:
         creds = credentials(settings, use_rerank=True)
+        stt_creds = model_creds(settings, resolve_model(settings, "stt")[1])
+        if stt_creds:
+            creds["stt"] = stt_creds
         check = central_json("/v1/credentials/check", {"ctx": {"credentials": creds}}, settings=settings)
-        for k in ("llm", "embedding", "vector", "rerank"):
+        for k in ("llm", "embedding", "vector", "rerank", "stt"):
             out[k] = check.get(k)
         _, emb = resolve_model(settings, "embedding")
         got = (check.get("embedding") or {}).get("dim")
@@ -1617,12 +1660,25 @@ class BotUpdateRequest(BaseModel):
     welcome_icon: str | None = None
 
 
+def stt_model_for(s: dict, bot: dict) -> dict | None:
+    """โมเดลถอดเสียงของบอท: STT ค่าเริ่มต้นในคลัง ไม่งั้นใช้ LLM ของบอทถ้าเป็น Gemini (ถอดเสียงได้ในตัว)
+    — LLM แบบ OpenAI-compatible ทั่วไปรับไฟล์เสียงไม่ได้ จึงไม่ใช้แทน"""
+    _, stt = resolve_model(s, "stt")
+    if stt:
+        return stt
+    _, llm = resolve_model(s, "llm", bot.get("llm_model_id"))
+    if llm and (s["providers"].get(llm.get("provider") or "") or {}).get("type") == "google":
+        return llm
+    return None
+
+
 def _enrich(bot: dict) -> dict:
     kbs = {kb["id"]: kb for kb in db_all("kbs")}
     skills = {s["id"]: s for s in db_all("skills")}
     s = load_settings()
     _, llm = resolve_model(s, "llm", bot.get("llm_model_id"))
     _, rr = resolve_model(s, "rerank", bot.get("rerank_model_id"))
+    stt = stt_model_for(s, bot)
     return {
         **bot,
         "llm_model_id": bot.get("llm_model_id") or "",
@@ -1632,6 +1688,7 @@ def _enrich(bot: dict) -> dict:
         "welcome_icon": bot.get("welcome_icon") or "sparkles",
         "llm_name": llm["name"] if llm else None,
         "rerank_name": rr["name"] if rr else None,
+        "voice_input": {"available": bool(stt), "model_name": stt["name"] if stt else None},
         "kb_names": [kbs[k]["name"] for k in bot["kb_ids"] if k in kbs],
         "skill_set_names": [skills[s_]["name"] for s_ in bot["skill_set_ids"] if s_ in skills],
     }
@@ -1843,6 +1900,42 @@ async def chat(bot_id: str, message: str = Form(...), file: UploadFile | None = 
     _raise_for(resp)
     body = _after_done(bot_id, stamp, resp.json())
     return {k: body[k] for k in ("reply", "used_skill", "export") if k in body}
+
+
+STT_LANGUAGE_RE = re.compile(r"^[a-z]{2,3}(-[A-Za-z]{2,4})?$")
+
+
+@app.post("/api/bots/{bot_id}/transcribe")
+async def transcribe(bot_id: str, file: UploadFile = File(...), language: str = Form("")):
+    """ถอดเสียงจากปุ่มไมค์ในหน้าแชท — ส่งเสียงให้ central พร้อมโมเดลของเรา (central ไม่มีโมเดลเอง)
+    ได้ข้อความกลับมาใส่ช่องพิมพ์ ผู้ใช้ตรวจ/แก้ก่อนกดส่งเอง (ไม่ส่งเข้าแชทอัตโนมัติ)"""
+    bot = _get_bot(bot_id)
+    s = load_settings()
+    model = stt_model_for(s, bot)
+    if not model:
+        raise HTTPException(400, "ยังไม่มีโมเดลถอดเสียง — เพิ่ม Speech-to-Text ในหลังบ้าน → การเชื่อมต่อ AI หรือใช้ LLM ที่เป็น Gemini")
+    language = language.strip()
+    payload = {"ctx": {"credentials": {"stt": model_creds(s, model)}},
+               "language": language if STT_LANGUAGE_RE.match(language) else None}
+    data = await file.read()
+    if not data:
+        raise HTTPException(400, "ไม่ได้ยินเสียง ลองอัดใหม่อีกครั้ง")
+    file_part = {"file": (file.filename or "voice.wav", data, file.content_type or "audio/wav")}
+    url, _ = _central(s)
+    async with httpx.AsyncClient(timeout=TIMEOUT) as client:
+        for attempt in range(2):
+            try:
+                resp = await client.post(f"{url}/v1/stt", headers={"Authorization": f"Bearer {get_token(force=attempt > 0, settings=s)}"},
+                                         data={"payload": json.dumps(payload, ensure_ascii=False)}, files=file_part)
+            except httpx.HTTPError as e:
+                raise CentralError(502, "central_unreachable", f"ติดต่อ central ไม่ได้ ({type(e).__name__})")
+            if resp.status_code == 401 and attempt == 0:
+                continue
+            break
+    _raise_for(resp)
+    body = resp.json()
+    add_usage(body.get("usage"))
+    return {"text": body.get("text") or ""}
 
 
 @app.get("/api/exports/{export_id}/download")

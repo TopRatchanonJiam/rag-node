@@ -81,6 +81,9 @@ Browser/Line → [Customer node: frontend + thin backend + Postgres + connector]
 - **ล็อก embedding ต่อ KB**: ทุก KB ต้องระบุ `embedding: {model, dim}` (§4) central ตรวจว่าตรงกับ collection ไม่ตรง → `409 embedding_dim_mismatch`
 - `hints`: จุดที่ตอนนี้ฮาร์ดโค้ดในโค้ด (`_LIKELY_ENTITY_FIELD_NAMES`, ชื่อ field งวด) ยกออกมาเป็น config ต่อ request
   ถ้าไม่ส่ง = ใช้ค่า default เดิมของ central ⚠️ ต้องตรวจว่ามีค่าฮาร์ดโค้ดตัวอื่นอีกไหมตอน refactor
+- `credentials.<llm|embedding|rerank|stt>.params` (ไม่บังคับ): พารามิเตอร์เพิ่มเติมของโมเดล เป็น JSON object ที่ central ส่งต่อให้ผู้ให้บริการตรง ๆ
+  คีย์ทั่วไปไปอยู่ใน body (เช่น `temperature`, `dimensions`), `headers` ใช้เป็น HTTP header และ `query` ใช้เป็น query string
+  คีย์ที่สูตรคุมเองจะทับค่าที่ส่งมาเสมอ ถ้าผู้ให้บริการไม่รับพารามิเตอร์จะตอบ `422 provider_bad_request` พร้อมข้อความของผู้ให้บริการ
 - ห้าม central เก็บ/cache ค่าใน `credentials` ข้าม request
 
 ## 4. Chat
@@ -167,6 +170,27 @@ event: result   data: {"source":"report.pdf","pages":120,"parent_chunks":84,"chi
 ## 7. OCR
 
 ### `POST /v1/ocr`  (multipart: payload + file) → `{ "text": "...", "pages": n, "usage": {...} }`
+
+## 7.1 Speech-to-Text
+
+### `POST /v1/stt`  (multipart: payload + file เสียง) → `{ "text": "...", "mode": "llm|transcriptions", "model": "...", "usage": {...} }`
+
+central ไม่มีโมเดลถอดเสียงของตัวเอง — ใช้โมเดลที่ node ส่งมาใน `ctx.credentials`:
+- `credentials.stt` (ถ้ามี) ไม่งั้นใช้ `credentials.llm` (LLM ของบอท)
+- `provider: "google"` → Gemini ถอดเสียงเองแบบ multimodal (`mode: "llm"`, นับ token ใน `usage.llm`)
+- `provider: "openai_compatible"` → `POST {base_url}/audio/transcriptions` แบบ Whisper (`mode: "transcriptions"`)
+  ถ้าผู้ให้บริการไม่มี endpoint นี้ → `422 stt_unsupported`
+
+```json
+{ "ctx": { "credentials": { "stt": { "provider": "openai_compatible", "model": "whisper-large-v3",
+                                     "api_key": "...", "base_url": "https://api.groq.com/openai/v1" },
+                            "llm": { ... } } },
+  "language": "th" }
+```
+- ไฟล์เสียง: wav / mp3 / m4a / aac / ogg / webm / flac ไม่เกิน `limits.stt_audio_mb` (ค่าเริ่มต้น 15MB, env `STT_MAX_MB`)
+  หน้าแชทของ node แปลงเป็น WAV 16kHz mono ก่อนส่ง (ทุกผู้ให้บริการรับได้)
+- `usage.stt = {calls, audio_seconds}` (นับวินาทีได้เฉพาะ WAV)
+- `POST /v1/credentials/check` ตรวจ `stt` ด้วยไฟล์เสียงเงียบเมื่อส่ง `credentials.stt` มา
 
 ## 8. Utility
 

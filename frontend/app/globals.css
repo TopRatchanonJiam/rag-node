@@ -39,7 +39,11 @@ body {
 }
 /* แผงลอยมาตรฐาน */
 .surface {
-  @apply rounded-2xl bg-white shadow-float ring-1 ring-accent-200/60;
+  @apply rounded-2xl bg-white bg-sheen shadow-float ring-1 ring-accent-200/60;
+}
+/* หัวเรื่องไล่จากดำหมึกไปน้ำเงินเข้ม */
+.title-grad {
+  @apply bg-gradient-to-r from-ink via-accent-800 to-brand-800 bg-clip-text text-transparent;
 }
 .field-label {
   @apply mb-1 block text-xs font-medium text-accent-600;

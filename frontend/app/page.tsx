@@ -44,10 +44,13 @@ function EmptyState({ bot, onPick, disabled }: { bot: Chatbot; onPick: (q: strin
   return (
     <div className="flex flex-1 flex-col items-center justify-center px-4 py-10 text-center">
       <p className="eyebrow mb-5">AI Assistant</p>
-      <span className="mb-5 flex h-14 w-14 items-center justify-center rounded-2xl bg-ink text-brand-300 shadow-ink">
-        <Sparkles size={22} />
+      <span className="relative mb-5">
+        <span className="absolute -inset-10 rounded-full bg-gradient-to-br from-brand-300/60 via-brand-200/25 to-violet-200/20 blur-2xl" />
+        <span className="relative flex h-14 w-14 items-center justify-center rounded-2xl bg-ink bg-ink-grad text-brand-300 shadow-ink">
+          <Sparkles size={22} />
+        </span>
       </span>
-      <h1 className="text-2xl font-semibold tracking-tight text-accent-900">{bot.name}</h1>
+      <h1 className="title-grad text-2xl font-semibold tracking-tight">{bot.name}</h1>
       <p className="mt-2 max-w-md text-sm font-light leading-relaxed text-accent-500">
         {bot.description || "ถามอะไรก็ได้เกี่ยวกับเอกสารขององค์กร บอทจะตอบจากข้อมูลที่มีอยู่"}
       </p>
@@ -139,7 +142,7 @@ function ChatApp() {
     <div className="flex h-[100dvh] flex-col">
       <header className="flex h-14 shrink-0 items-center justify-between gap-3 border-b border-white/70 bg-white/70 px-4 backdrop-blur-xl sm:px-6">
         <div className="flex min-w-0 items-center gap-2.5">
-          <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-xl bg-ink text-brand-300 shadow-ink">
+          <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-xl bg-ink bg-ink-grad text-brand-300 shadow-ink">
             <Bot size={16} />
           </span>
           <BotPicker bots={bots} activeId={activeBotId} onSelect={setActiveBotId} />
@@ -163,7 +166,7 @@ function ChatApp() {
           ) : !activeBot ? (
             <div className="m-auto max-w-sm text-center">
               <p className="text-sm text-accent-500">ยังไม่มีบอทให้ใช้งาน</p>
-              <Link href="/admin/bots/" className="mt-3 inline-block rounded-xl bg-ink px-4 py-2 text-sm font-medium text-white shadow-ink hover:shadow-glow">
+              <Link href="/admin/bots/" className="mt-3 inline-block rounded-xl bg-ink bg-ink-grad px-4 py-2 text-sm font-medium text-white shadow-ink hover:shadow-glow">
                 ไปสร้างบอทในหลังบ้าน
               </Link>
             </div>

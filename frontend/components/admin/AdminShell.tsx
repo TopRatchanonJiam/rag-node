@@ -36,9 +36,9 @@ function isActive(pathname: string, href: string) {
 
 function Logo() {
   return (
-    <span className="relative flex h-8 w-8 items-center justify-center rounded-xl bg-ink text-white shadow-ink">
+    <span className="relative flex h-8 w-8 items-center justify-center rounded-xl bg-ink bg-ink-grad text-white shadow-ink">
       <Bot size={15} />
-      <span className="absolute -right-0.5 -top-0.5 h-2.5 w-2.5 rounded-full bg-brand-400 ring-2 ring-white" />
+      <span className="absolute -right-0.5 -top-0.5 h-2.5 w-2.5 rounded-full bg-azure-grad ring-2 ring-white" />
     </span>
   );
 }
@@ -71,13 +71,13 @@ export function AdminShell({ children }: { children: ReactNode }) {
                       href={`${item.href}/`}
                       className={`group flex items-center gap-2.5 rounded-xl px-3 py-2.5 text-sm transition-all ${
                         active
-                          ? "bg-ink font-medium text-white shadow-ink"
+                          ? "bg-ink bg-ink-grad font-medium text-white shadow-ink"
                           : "text-accent-600 hover:bg-white hover:text-accent-900 hover:shadow-soft"
                       }`}
                     >
                       <Icon size={16} className={active ? "text-brand-300" : "text-accent-400 group-hover:text-accent-700"} />
                       <span className="flex-1">{item.label}</span>
-                      {active && <span className="h-1.5 w-1.5 rounded-full bg-brand-400" />}
+                      {active && <span className="h-1.5 w-1.5 rounded-full bg-azure-grad shadow-glow" />}
                     </Link>
                   );
                 })}
@@ -87,7 +87,7 @@ export function AdminShell({ children }: { children: ReactNode }) {
           <div className="p-3">
             <Link
               href="/"
-              className="flex items-center gap-2.5 rounded-xl bg-accent-100/70 px-3 py-2.5 text-sm font-medium text-accent-700 transition-colors hover:bg-brand-50 hover:text-brand-700"
+              className="flex items-center gap-2.5 rounded-xl bg-accent-100/70 px-3 py-2.5 text-sm font-medium text-accent-700 transition-colors hover:bg-gradient-to-r hover:from-brand-50 hover:to-white hover:text-brand-700"
             >
               <MessageSquareText size={16} className="text-brand-600" />
               เปิดหน้าแชท
@@ -114,7 +114,7 @@ export function AdminShell({ children }: { children: ReactNode }) {
                 key={item.href}
                 href={`${item.href}/`}
                 className={`shrink-0 rounded-full px-3 py-1.5 text-xs font-medium ${
-                  active ? "bg-ink text-white" : "bg-white text-accent-600 ring-1 ring-accent-200"
+                  active ? "bg-ink bg-ink-grad text-white" : "bg-white text-accent-600 ring-1 ring-accent-200"
                 }`}
               >
                 {item.label}
@@ -137,8 +137,13 @@ export function PageHeader({ title, description, actions }: { title: string; des
   return (
     <div className="mb-8 flex flex-wrap items-end justify-between gap-4">
       <div className="min-w-0">
-        {group && <p className="eyebrow mb-2.5">{group.eyebrow}</p>}
-        <h1 className="text-2xl font-semibold tracking-tight text-accent-900">{title}</h1>
+        {group && (
+          <p className="eyebrow mb-2.5 flex items-center gap-2.5">
+            <span className="h-[3px] w-6 rounded-full bg-azure-grad" />
+            {group.eyebrow}
+          </p>
+        )}
+        <h1 className="title-grad text-2xl font-semibold tracking-tight">{title}</h1>
         {description && <p className="mt-1.5 max-w-2xl text-sm font-light leading-relaxed text-accent-500">{description}</p>}
       </div>
       {actions && <div className="flex items-center gap-2">{actions}</div>}

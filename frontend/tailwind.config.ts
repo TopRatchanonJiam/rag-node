@@ -40,6 +40,14 @@ const config: Config = {
           soft: "#1b2430",
         },
       },
+      backgroundImage: {
+        // ดำหมึกไล่อมน้ำเงินเข้ม — มีมิติแต่ยังนิ่ง
+        "ink-grad": "linear-gradient(140deg, #22344a 0%, #111821 52%, #0b1016 100%)",
+        // ฟ้าใสไล่ฟ้าน้ำทะเล — ไฮไลต์เล็ก ๆ เท่านั้น
+        "azure-grad": "linear-gradient(135deg, #4dd5ff 0%, #0a8fe0 100%)",
+        // แสงขาวบนแผงลอย
+        sheen: "linear-gradient(180deg, #ffffff 0%, #f8fbfd 100%)",
+      },
       boxShadow: {
         soft: "0 1px 2px 0 rgb(17 24 33 / 0.04), 0 2px 10px -3px rgb(17 24 33 / 0.06)",
         "soft-lg": "0 10px 30px -10px rgb(17 24 33 / 0.14), 0 22px 50px -18px rgb(17 24 33 / 0.16)",

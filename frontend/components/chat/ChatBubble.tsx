@@ -9,7 +9,7 @@ export function ChatBubble({ message }: { message: ChatMessage }) {
     <div className={`flex items-start gap-2.5 ${isUser ? "flex-row-reverse" : ""}`}>
       <div
         className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-full ${
-          isUser ? "bg-accent-200 text-accent-700" : "bg-ink text-brand-300 shadow-ink"
+          isUser ? "bg-accent-200 text-accent-700" : "bg-ink bg-ink-grad text-brand-300 shadow-ink"
         }`}
       >
         {isUser ? <User size={16} /> : <Bot size={16} />}
@@ -31,7 +31,7 @@ export function ChatBubble({ message }: { message: ChatMessage }) {
         )}
         <div
           className={`whitespace-pre-wrap rounded-2xl px-4 py-2.5 text-sm leading-relaxed shadow-soft ${
-            isUser ? "rounded-tr-sm bg-ink text-white shadow-ink" : "rounded-tl-sm bg-white text-accent-800 ring-1 ring-accent-200/60"
+            isUser ? "rounded-tr-sm bg-ink bg-ink-grad text-white shadow-ink" : "rounded-tl-sm bg-white text-accent-800 ring-1 ring-accent-200/60"
           } ${message.pending ? "italic text-slate-400" : ""}`}
         >
           {message.streaming && !message.content ? (

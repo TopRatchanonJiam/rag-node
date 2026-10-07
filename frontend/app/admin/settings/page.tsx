@@ -131,9 +131,9 @@ function Result({ item, okText }: { item?: CheckItem | null; okText?: string }) 
 function Panel({ icon, title, description, action, children }: { icon: ReactNode; title: string; description: string; action?: ReactNode; children: ReactNode }) {
   return (
     <section className="surface">
-      <header className="flex flex-wrap items-start justify-between gap-3 border-b border-accent-100 px-5 py-4">
+      <header className="flex flex-wrap items-start justify-between gap-3 rounded-t-2xl border-b border-accent-100 bg-gradient-to-r from-brand-50/70 via-white/0 to-white/0 px-5 py-4">
         <div className="flex min-w-0 items-start gap-3">
-          <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-ink text-brand-300 shadow-ink">{icon}</span>
+          <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-ink bg-ink-grad text-brand-300 shadow-ink">{icon}</span>
           <div className="min-w-0">
             <h2 className="pt-0.5 text-sm font-semibold text-accent-900">{title}</h2>
             <p className="mt-0.5 text-xs text-accent-500">{description}</p>
@@ -460,7 +460,7 @@ function ModelGroup({
               <div className="flex items-start justify-between gap-2">
                 <p className="min-w-0 break-words text-sm font-semibold text-accent-900">{m.name}</p>
                 {m.is_default && (
-                  <span className="flex shrink-0 items-center gap-1 rounded-full bg-brand-600 px-2 py-0.5 text-[11px] font-semibold text-white">
+                  <span className="flex shrink-0 items-center gap-1 rounded-full bg-azure-grad px-2 py-0.5 text-[11px] font-semibold text-white shadow-glow">
                     <Star size={11} className="fill-white" /> ค่าเริ่มต้น
                   </span>
                 )}

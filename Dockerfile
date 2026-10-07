@@ -4,7 +4,9 @@ WORKDIR /web
 COPY frontend/package.json frontend/package-lock.json ./
 RUN npm ci --no-audit --no-fund
 COPY frontend/ ./
-RUN npm run build
+# ว่าง = ปกติ · ใส่ เช่น /node-ui เมื่อวางคู่กับเว็บอื่นบนโดเมนเดียวกัน (ดู next.config.mjs)
+ARG NEXT_ASSET_PREFIX=""
+RUN NEXT_ASSET_PREFIX="$NEXT_ASSET_PREFIX" npm run build
 
 # ── 2) node backend (FastAPI) + ไฟล์หน้าเว็บที่ build แล้ว ──
 FROM python:3.13-slim
@@ -20,7 +22,7 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install -r requirements.txt
 
-COPY app.py .
+COPY app.py legacy_api.py ./
 COPY --from=web /web/out /app/web
 
 # data/ = state.json, ไฟล์ต้นฉบับ, ไฟล์ export ของลูกค้า

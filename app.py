@@ -46,6 +46,9 @@ FRONTEND_DIR = Path(os.environ.get("NODE_FRONTEND_DIR") or ROOT / "frontend" / "
 
 NODE_USER = os.environ.get("NODE_USER", "admin")
 NODE_PASSWORD = os.environ.get("NODE_PASSWORD", "")
+# all = ล็อกทุกหน้า (ค่าเริ่มต้น) · admin = ล็อกเฉพาะหลังบ้าน (/admin, /api/admin) ให้หน้าเว็บสาธารณะใช้ API ได้
+NODE_AUTH_SCOPE = os.environ.get("NODE_AUTH_SCOPE", "all").strip().lower()
+LEGACY_UI = os.environ.get("LEGACY_UI", "").strip().lower() in ("1", "true", "yes")
 
 KB_ALLOWED = [".pdf", ".txt", ".docx", ".csv", ".xlsx"]
 QUICK_CHAT_MAX_TAGS = 5
@@ -69,7 +72,9 @@ app = FastAPI(title="RAG Node", docs_url=None, redoc_url=None, openapi_url=None)
 
 @app.middleware("http")
 async def basic_auth(request: Request, call_next):
-    if NODE_PASSWORD and request.url.path != "/healthz":
+    path = request.url.path
+    protected = path.startswith(("/admin", "/api/admin")) if NODE_AUTH_SCOPE == "admin" else path != "/healthz"
+    if NODE_PASSWORD and protected:
         ok = False
         header = request.headers.get("authorization", "")
         if header.lower().startswith("basic "):
@@ -104,7 +109,9 @@ async def no_cache_html(request: Request, call_next):
 # SQLite — เก็บแต่ละรายการเป็น JSON ต่อแถว (ตารางละประเภท)
 # ══════════════════════════════════════════════
 
-_TABLES = ("kbs", "skills", "bots", "caches", "exports", "sources")
+_TABLES = ("kbs", "skills", "bots", "caches", "exports", "sources",
+           # ใช้เฉพาะโหมด LEGACY_UI (legacy_api.py) — สร้างไว้เสมอก็ไม่เสียหาย
+           "ocr_jobs", "screening_jobs", "screening_candidates", "screening_templates", "pharmacy")
 _db_lock = threading.RLock()
 
 
@@ -1132,9 +1139,13 @@ def delete_kb(kb_id: str):
     return {"message": "ลบ Knowledge Base สำเร็จ"}
 
 
-def _ingest_via_central(kb: dict, filename: str, data: bytes) -> dict:
+def _ingest_via_central(kb: dict, filename: str, data: bytes, replace_existing: bool = True,
+                        extra_metadata: dict | None = None, ctx: dict | None = None) -> dict:
     url, _ = _central()
-    payload = {"ctx": _kb_ctx(kb), "kb": kb_payload(kb), "source": {"filename": filename, "replace_existing": True}}
+    source = {"filename": filename, "replace_existing": replace_existing}
+    if extra_metadata:
+        source["extra_metadata"] = extra_metadata
+    payload = {"ctx": ctx or _kb_ctx(kb), "kb": kb_payload(kb), "source": source}
     for attempt in range(2):
         headers = {"Authorization": f"Bearer {get_token(force=attempt > 0)}"}
         try:
@@ -1944,6 +1955,12 @@ def download_export(export_id: str):
     if not rec:
         raise HTTPException(404, "ไม่พบไฟล์")
     return FileResponse(EXPORTS_DIR / rec["path"], filename=rec["filename"], media_type=rec.get("mime") or "application/octet-stream")
+
+
+# API แบบระบบเดิม (langchain-demo) ให้หน้าเว็บเดิมใช้ได้ — เปิดเฉพาะเมื่อตั้ง LEGACY_UI=1
+if LEGACY_UI:
+    from legacy_api import router as _legacy_router
+    app.include_router(_legacy_router)
 
 
 # ══════════════════════════════════════════════

@@ -192,6 +192,15 @@ central ไม่มีโมเดลถอดเสียงของตัว
 - `usage.stt = {calls, audio_seconds}` (นับวินาทีได้เฉพาะ WAV)
 - `POST /v1/credentials/check` ตรวจ `stt` ด้วยไฟล์เสียงเงียบเมื่อส่ง `credentials.stt` มา
 
+## 7.2 Retrieval test และ Candidate screening (ใช้กับหน้าเว็บเดิมในโหมด LEGACY_UI ของ node)
+
+- `POST /v1/kb/retrieve` `{ctx, kb, query, k, use_splitter}` → `{query, sub_queries, k, total, results[{score, chunk_type, child_text, parent_text, metadata, sub_query}], usage}` (ไม่เรียก LLM)
+- `POST /v1/screening/parse-requirements` `{ctx, text}` → `{requirements[{text, kind, tags, hard_filter}], method: "ai"|"format", usage}`
+- `POST /v1/screening/match` `{ctx (ควรมี rerank), kb: <collection ของตำแหน่งงาน>, job: {..., requirements}, candidates: [{id, ...}]}` → ผลจับคู่รายผู้สมัคร × ข้อกำหนด (`scorer: cross-encoder|cosine`)
+  node เก็บตำแหน่งงาน/ผู้สมัครเอง central ไม่เก็บ
+- `POST /v1/ingest/file`: `source.extra_metadata` (object ของค่าธรรมดา) ติดทุก chunk เช่น `candidate_id` · ตอบ `extraction_method` · รับ `.md`
+- `POST /v1/kb/delete-source`: `field` = `source` (ค่าเริ่มต้น) หรือ `candidate_id`
+
 ## 8. Utility
 
 | Endpoint | หน้าที่ |

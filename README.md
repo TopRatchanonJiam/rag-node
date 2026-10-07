@@ -77,3 +77,9 @@ python -m venv .venv
 - **ไฟล์ต้นฉบับ** อยู่ที่ `data/originals/` ส่วนไฟล์ export อยู่ที่ `data/exports/`
 - **ข้อมูลไม่ผูกกับ central ตัวใดตัวหนึ่ง** central ไม่เก็บอะไร เปลี่ยน `CENTRAL_URL` ไปเครื่องอื่นได้ KB และบอทเดิมยังใช้ได้ ตราบใดที่ license กับ Qdrant ยังเป็นชุดเดิม
 - **ยังไม่มีในหน้าเว็บนี้:** Retrieval Test และ KB Realtime (connector) เพราะ central ยังไม่มี endpoint รองรับ
+
+## โหมดหน้าเว็บเดิม (LEGACY_UI)
+
+ตั้ง `LEGACY_UI=1` แล้ว node จะตอบ API แบบเดียวกับ backend ของ langchain-demo (`legacy_api.py`) ให้หน้าเว็บเดิมใช้ได้โดยไม่แก้โค้ดหน้าเว็บ
+ใช้คู่กับ `NODE_AUTH_SCOPE=admin` เพื่อล็อกเฉพาะหลังบ้าน `/admin` ส่วน API ที่หน้าเว็บเดิมเรียกเปิดเหมือนระบบเดิม
+และ build ด้วย `NEXT_ASSET_PREFIX=/node-ui` เมื่อวางหน้าเว็บสองตัวบนโดเมนเดียวกัน

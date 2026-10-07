@@ -1,7 +1,8 @@
 "use client";
 
 import { useState } from "react";
-import { AlertTriangle, Eye, FileText, Loader2, Trash2 } from "lucide-react";
+import { AlertTriangle, Eye, FileText, Loader2, Radio, Trash2 } from "lucide-react";
+import { RealtimeSources } from "./RealtimeSources";
 import { DocDropzone } from "./DocDropzone";
 import { ChunkViewerModal } from "./ChunkViewerModal";
 import { Button } from "@/components/ui/Button";
@@ -20,6 +21,7 @@ export function KnowledgeBaseDetail({
   onUpload,
   onDeleteFile,
   onDeleteKb,
+  onRefresh,
 }: {
   kb: KnowledgeBase;
   uploading: boolean;
@@ -27,8 +29,10 @@ export function KnowledgeBaseDetail({
   onUpload: (file: File) => void;
   onDeleteFile: (filename: string) => void;
   onDeleteKb: () => void;
+  onRefresh?: () => void;
 }) {
   const [viewingFile, setViewingFile] = useState<string | null>(null);
+  const [tab, setTab] = useState<"files" | "live">("files");
 
   return (
     <div className="flex flex-col gap-5">
@@ -37,7 +41,7 @@ export function KnowledgeBaseDetail({
           <h2 className="text-xl font-semibold text-slate-900">{kb.name}</h2>
           {kb.description && <p className="mt-1 text-sm text-slate-500">{kb.description}</p>}
           <p className="mt-2 text-xs text-slate-400">
-            {kb.file_count} ไฟล์ · {kb.chunk_count} chunks · embedding: {kb.embedding?.name ?? kb.embedding?.model ?? "—"} ({kb.embedding?.dim ?? "?"} มิติ)
+            {kb.file_count} ไฟล์ · {kb.source_count ?? 0} แหล่งข้อมูลสด · {kb.chunk_count} chunks · embedding: {kb.embedding?.name ?? kb.embedding?.model ?? "—"} ({kb.embedding?.dim ?? "?"} มิติ)
           </p>
         </div>
         <Button variant="ghost" onClick={onDeleteKb} className="text-rose-600 hover:bg-rose-50">
@@ -52,6 +56,30 @@ export function KnowledgeBaseDetail({
         </p>
       )}
 
+      <div className="flex w-fit gap-1 rounded-xl bg-accent-100/80 p-1">
+        {([
+          ["files", <FileText key="f" size={14} />, "ไฟล์เอกสาร", kb.file_count],
+          ["live", <Radio key="l" size={14} />, "ข้อมูลสดจาก API", kb.source_count ?? 0],
+        ] as const).map(([id, icon, label, count]) => (
+          <button
+            key={id}
+            type="button"
+            onClick={() => setTab(id)}
+            className={`flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-sm font-medium transition-all ${
+              tab === id ? "bg-white text-accent-900 shadow-soft" : "text-accent-500 hover:text-accent-800"
+            }`}
+          >
+            <span className={tab === id ? "text-brand-600" : ""}>{icon}</span>
+            {label}
+            <span className={`rounded-full px-1.5 text-[10px] ${tab === id ? "bg-brand-50 text-brand-700" : "bg-white/70 text-accent-400"}`}>{count}</span>
+          </button>
+        ))}
+      </div>
+
+      {tab === "live" ? (
+        <RealtimeSources kbId={kb.id} disabled={kb.embedding_available === false} onChanged={() => onRefresh?.()} />
+      ) : (
+      <>
       <DocDropzone onFileSelected={onUpload} disabled={uploading || kb.embedding_available === false} />
       {uploading && (
         <p className="flex items-center gap-2 text-sm text-slate-500">
@@ -99,6 +127,9 @@ export function KnowledgeBaseDetail({
           </div>
         )}
       </div>
+
+      </>
+      )}
 
       {viewingFile && <ChunkViewerModal kbId={kb.id} filename={viewingFile} onClose={() => setViewingFile(null)} />}
     </div>

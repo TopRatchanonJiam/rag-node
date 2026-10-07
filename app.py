@@ -104,7 +104,7 @@ async def no_cache_html(request: Request, call_next):
 # SQLite — เก็บแต่ละรายการเป็น JSON ต่อแถว (ตารางละประเภท)
 # ══════════════════════════════════════════════
 
-_TABLES = ("kbs", "skills", "bots", "caches", "exports")
+_TABLES = ("kbs", "skills", "bots", "caches", "exports", "sources")
 _db_lock = threading.RLock()
 
 
@@ -683,6 +683,7 @@ def _startup():
     migrate_legacy_state()
     load_settings()
     ensure_kb_embeddings()
+    start_realtime_scheduler()
 
 
 # ══════════════════════════════════════════════
@@ -1009,10 +1010,12 @@ class KbCreateRequest(BaseModel):
 
 def _kb_out(kb: dict, with_files: bool = False) -> dict:
     files = kb.get("files", {})
+    sources = [s for s in db_all("sources") if s.get("kb_id") == kb["id"]]
     out = {
         "id": kb["id"], "name": kb["name"], "description": kb.get("description", ""),
         "collection_name": kb["collection_name"], "created_at": kb["created_at"],
-        "file_count": len(files), "chunk_count": sum(f.get("chunks", 0) for f in files.values()),
+        "file_count": len(files), "source_count": len(sources),
+        "chunk_count": sum(f.get("chunks", 0) for f in files.values()) + sum(int(s.get("last_chunks") or 0) for s in sources),
         "embedding": {**kb["embedding"], "name": _embedding_name(kb)},
         "embedding_available": (kb.get("embedding") or {}).get("model_id") in load_settings()["registry"],
     }
@@ -1071,6 +1074,9 @@ def delete_kb(kb_id: str):
     kb = _get_kb(kb_id)
     central_json("/v1/kb/drop", {"ctx": _kb_ctx(kb), "kb": kb_payload(kb)})
     db_delete("kbs", kb_id)
+    for src in db_all("sources"):
+        if src.get("kb_id") == kb_id:
+            db_delete("sources", src["id"])
     for bot in db_all("bots"):
         if kb_id in bot["kb_ids"]:
             bot["kb_ids"] = [k for k in bot["kb_ids"] if k != kb_id]
@@ -1187,6 +1193,295 @@ def get_kb_file_chunks(kb_id: str, filename: str):
 
 
 # ══════════════════════════════════════════════
+# แหล่งข้อมูลสด (Realtime API) — node ดึง API ของลูกค้าเอง (key ไม่ออกนอกองค์กร) แล้วส่งแถวให้
+# central แปลงเป็น chunk ลง KB; central patch เฉพาะแถวที่ค่าเปลี่ยน ไม่ต้อง embed ใหม่ทั้งชุดทุกรอบ
+# ══════════════════════════════════════════════
+
+RT_METHODS = ("GET", "POST")
+RT_AUTH = ("none", "bearer", "api_key_header", "api_key_query")
+RT_MIN_INTERVAL = 60
+RT_MAX_RECORDS = 5000
+RT_FETCH_TIMEOUT = 20
+_rt_locks: dict[str, threading.Lock] = {}
+_rt_locks_guard = threading.Lock()
+
+
+class SourceIn(BaseModel):
+    name: str
+    url: str
+    method: str = "GET"
+    headers: dict = Field(default_factory=dict)
+    query_params: dict = Field(default_factory=dict)
+    body: dict = Field(default_factory=dict)
+    auth_type: str = "none"
+    auth_token: str | None = ""  # "" = ใช้ค่าเดิม (ตอนแก้ไข), null = ลบ
+    auth_header_name: str = ""
+    auth_query_param: str = ""
+    records_path: str = ""
+    poll_interval_sec: int = 300
+    id: str | None = None  # ใช้ตอนทดสอบ: เอา token ที่บันทึกไว้มาใช้
+
+
+class SourceToggle(BaseModel):
+    enabled: bool
+
+
+def _rt_tag(sid: str) -> str:
+    # ใช้ id (ไม่ใช่ชื่อที่แก้ได้) เป็น metadata "source" ของทุก chunk — sync รอบหน้าหาของเก่าเจอเสมอ
+    return f"realtime:{sid}"
+
+
+def _rt_lock(sid: str) -> threading.Lock:
+    with _rt_locks_guard:
+        return _rt_locks.setdefault(sid, threading.Lock())
+
+
+def _validate_source(req: SourceIn) -> None:
+    if not req.name.strip():
+        raise HTTPException(400, "กรุณาตั้งชื่อแหล่งข้อมูล")
+    if not re.match(r"^https?://", req.url.strip(), re.I):
+        raise HTTPException(400, "URL ต้องขึ้นต้นด้วย http:// หรือ https://")
+    if req.method.upper() not in RT_METHODS:
+        raise HTTPException(400, "รองรับเฉพาะ GET และ POST")
+    if req.auth_type not in RT_AUTH:
+        raise HTTPException(400, "รูปแบบการยืนยันตัวตนไม่ถูกต้อง")
+    if req.poll_interval_sec < RT_MIN_INTERVAL:
+        raise HTTPException(400, f"ตั้งรอบอัปเดตได้ต่ำสุด {RT_MIN_INTERVAL} วินาที")
+
+
+def _source_fields(req: SourceIn, old: dict | None = None) -> dict:
+    token = (old or {}).get("auth_token", "")
+    if req.auth_token is None:
+        token = ""
+    elif req.auth_token.strip():
+        token = _enc(req.auth_token.strip())
+    return {
+        "name": req.name.strip(), "url": req.url.strip(), "method": req.method.upper(),
+        "headers": req.headers or {}, "query_params": req.query_params or {}, "body": req.body or {},
+        "auth_type": req.auth_type, "auth_token": token if req.auth_type != "none" else "",
+        "auth_header_name": req.auth_header_name.strip(), "auth_query_param": req.auth_query_param.strip(),
+        "records_path": req.records_path.strip(), "poll_interval_sec": int(req.poll_interval_sec),
+    }
+
+
+def _source_out(src: dict) -> dict:
+    out = {k: v for k, v in src.items() if k not in ("auth_token", "last_attempt_epoch", "has_data")}
+    out["auth_token"] = _mask(_dec(src.get("auth_token", "")))
+    return out
+
+
+def _get_source(sid: str) -> dict:
+    src = db_get("sources", sid)
+    if not src:
+        raise HTTPException(404, "ไม่พบแหล่งข้อมูล")
+    return src
+
+
+def _walk_path(payload, path: str):
+    node = payload
+    for key in [k.strip() for k in (path or "").split(".") if k.strip()]:
+        if isinstance(node, dict) and key in node:
+            node = node[key]
+        elif isinstance(node, list) and key.isdigit() and int(key) < len(node):
+            node = node[int(key)]
+        else:
+            raise ValueError(f"ไม่พบ '{key}' ในข้อมูลที่ API ตอบมา — ตรวจช่อง ‘ตำแหน่งข้อมูล’")
+    return node
+
+
+def fetch_records(src: dict) -> list[dict]:
+    headers = {str(k): str(v) for k, v in (src.get("headers") or {}).items()}
+    params = {str(k): str(v) for k, v in (src.get("query_params") or {}).items()}
+    token = _dec(src.get("auth_token", ""))
+    auth = src.get("auth_type", "none")
+    if token and auth == "bearer":
+        headers["Authorization"] = f"Bearer {token}"
+    elif token and auth == "api_key_header":
+        headers[src.get("auth_header_name") or "X-API-Key"] = token
+    elif token and auth == "api_key_query":
+        params[src.get("auth_query_param") or "api_key"] = token
+    try:
+        resp = httpx.request(src.get("method", "GET"), src["url"], headers=headers, params=params,
+                             json=(src.get("body") or None) if src.get("method") == "POST" else None,
+                             timeout=RT_FETCH_TIMEOUT, follow_redirects=True)
+    except httpx.HTTPError as e:
+        raise ValueError(f"เรียก API ไม่ได้ ({type(e).__name__}) — ตรวจ URL และเครือข่าย")
+    if resp.status_code >= 400:
+        raise ValueError(f"API ตอบ {resp.status_code} — ตรวจ URL / การยืนยันตัวตน")
+    try:
+        payload = resp.json()
+    except ValueError:
+        raise ValueError("API ไม่ได้ตอบเป็น JSON")
+    records = _walk_path(payload, src.get("records_path", ""))
+    if isinstance(records, dict):
+        # API บางตัวตอบเป็น object ก้อนเดียว — ถือเป็น 1 แถว
+        records = [records]
+    if not isinstance(records, list):
+        raise ValueError(f"ตำแหน่งข้อมูลต้องชี้ไปที่รายการ (list) แต่ได้ {type(records).__name__}")
+    return [r if isinstance(r, dict) else {"value": r} for r in records]
+
+
+def _bump_kb_revision(kb_id: str) -> None:
+    with _db_lock:
+        kb = db_get("kbs", kb_id)
+        if kb:
+            kb["revision"] = kb.get("revision", 0) + 1
+            db_put("kbs", kb_id, kb)
+
+
+def _update_source(sid: str, patch: dict) -> dict | None:
+    with _db_lock:
+        src = db_get("sources", sid)
+        if not src:
+            return None
+        src.update(patch)
+        db_put("sources", sid, src)
+        return src
+
+
+def sync_source(sid: str) -> dict:
+    """ดึง API → ส่งให้ central → บันทึกสถานะ; คืนผล (ไม่ raise) ให้ทั้งปุ่ม ‘อัปเดตเดี๋ยวนี้’ และตัวจับเวลาใช้ร่วมกัน"""
+    lock = _rt_lock(sid)
+    if not lock.acquire(blocking=False):
+        return {"status": "busy", "error": "กำลังอัปเดตอยู่ — รอสักครู่"}
+    try:
+        src = db_get("sources", sid)
+        if not src:
+            return {"status": "error", "error": "ไม่พบแหล่งข้อมูล"}
+        _update_source(sid, {"last_attempt_epoch": time.time(), "syncing": True})
+        try:
+            kb = db_get("kbs", src["kb_id"])
+            if not kb:
+                raise ValueError("ไม่พบ Knowledge Base ของแหล่งข้อมูลนี้")
+            if (kb.get("embedding") or {}).get("model_id") not in load_settings()["registry"]:
+                raise ValueError("โมเดล embedding ของ Knowledge Base นี้ถูกลบไปแล้ว")
+            records = fetch_records(src)
+            if len(records) > RT_MAX_RECORDS:
+                raise ValueError(f"API ส่งมา {len(records)} แถว เกินที่รองรับ ({RT_MAX_RECORDS} แถว)")
+            res = central_json("/v1/ingest/records", {
+                "ctx": _kb_ctx(kb), "kb": kb_payload(kb),
+                # เคยดึงสำเร็จและต้นทางไม่ได้เปลี่ยน → patch ได้ (รอบที่ล้มชั่วคราวไม่ทำให้ต้องโหลดใหม่ทั้งชุด)
+                "source": {"name": _rt_tag(sid), "allow_incremental": bool(src.get("has_data"))},
+                "records": records,
+            })
+            add_usage(res.get("usage"))
+            if res.get("cache_invalidated"):
+                _bump_kb_revision(kb["id"])
+            patch = {"syncing": False, "has_data": True, "last_synced_at": _now(), "last_status": "success", "last_error": None,
+                     "last_record_count": len(records), "last_mode": res.get("mode")}
+            if res.get("chunks") is not None:
+                patch["last_chunks"] = res["chunks"]
+            updated = _update_source(sid, patch)
+            return {"status": "success", "mode": res.get("mode"), "patched_rows": res.get("patched_rows", 0),
+                    "record_count": len(records), "source": _source_out(updated) if updated else None}
+        except (ValueError, CentralError) as e:
+            msg = e.message if isinstance(e, CentralError) else str(e)
+        except Exception as e:  # ไม่ให้ตัวจับเวลาตาย
+            msg = f"อัปเดตไม่สำเร็จ ({type(e).__name__})"
+        updated = _update_source(sid, {"syncing": False, "last_synced_at": _now(), "last_status": "error", "last_error": msg})
+        return {"status": "error", "error": msg, "source": _source_out(updated) if updated else None}
+    finally:
+        lock.release()
+
+
+def _realtime_loop() -> None:
+    """ตัวจับเวลาเบา ๆ ในเธรดเดียว: ทุก 15 วินาทีหาแหล่งที่ถึงรอบแล้ว sync ทีละตัว"""
+    while True:
+        time.sleep(15)
+        try:
+            now = time.time()
+            for src in db_all("sources"):
+                if src.get("enabled") and now - float(src.get("last_attempt_epoch") or 0) >= int(src.get("poll_interval_sec") or 300):
+                    sync_source(src["id"])
+        except Exception as e:
+            print(f"[realtime] loop error: {e}")
+
+
+def start_realtime_scheduler() -> None:
+    # รีสตาร์ตแล้วอย่าค้างสถานะ ‘กำลังอัปเดต’
+    for src in db_all("sources"):
+        if src.get("syncing"):
+            _update_source(src["id"], {"syncing": False})
+    threading.Thread(target=_realtime_loop, name="realtime-sync", daemon=True).start()
+
+
+@app.get("/api/kb/{kb_id}/sources")
+def list_sources(kb_id: str):
+    _get_kb(kb_id)
+    return {"sources": [_source_out(s) for s in db_all("sources") if s.get("kb_id") == kb_id]}
+
+
+@app.post("/api/kb/{kb_id}/sources")
+def create_source(kb_id: str, req: SourceIn):
+    _get_kb(kb_id)
+    _validate_source(req)
+    sid = _new_id()
+    src = {"id": sid, "kb_id": kb_id, **_source_fields(req), "enabled": False, "syncing": False,
+           "last_synced_at": None, "last_status": "never", "last_error": None, "last_record_count": 0,
+           "last_chunks": 0, "last_mode": None, "created_at": _now()}
+    db_put("sources", sid, src)
+    return _source_out(src)
+
+
+@app.put("/api/sources/{sid}")
+def update_source(sid: str, req: SourceIn):
+    old = _get_source(sid)
+    _validate_source(req)
+    changed_shape = any(old.get(k) != v for k, v in _source_fields(req, old).items()
+                        if k in ("url", "method", "records_path", "body", "query_params"))
+    src = {**old, **_source_fields(req, old)}
+    if changed_shape:
+        src["has_data"] = False  # ต้นทางเปลี่ยน — รอบหน้าโหลดใหม่ทั้งชุด ไม่ patch ทับของเก่า
+    db_put("sources", sid, src)
+    return _source_out(src)
+
+
+@app.delete("/api/sources/{sid}")
+def delete_source(sid: str):
+    src = _get_source(sid)
+    kb = db_get("kbs", src["kb_id"])
+    with _rt_lock(sid):
+        if kb:
+            central_json("/v1/kb/delete-source", {"ctx": _kb_ctx(kb), "kb": kb_payload(kb), "source": _rt_tag(sid)})
+            _bump_kb_revision(kb["id"])
+        db_delete("sources", sid)
+    return {"message": f"ลบแหล่งข้อมูล ‘{src['name']}’ และข้อมูลที่ดึงมาแล้ว"}
+
+
+@app.post("/api/sources/test")
+def test_source(req: SourceIn):
+    _validate_source(req)
+    old = db_get("sources", req.id) if req.id else None
+    try:
+        records = fetch_records(_source_fields(req, old))
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    fields = sorted({k for r in records[:20] for k in r.keys()})
+    return {"total_records": len(records), "fields": fields, "sample": records[:3], "too_many": len(records) > RT_MAX_RECORDS}
+
+
+@app.post("/api/sources/{sid}/sync")
+def sync_now(sid: str):
+    _get_source(sid)
+    return sync_source(sid)
+
+
+@app.patch("/api/sources/{sid}/toggle")
+def toggle_source(sid: str, req: SourceToggle):
+    _get_source(sid)
+    patch = {"enabled": req.enabled}
+    if req.enabled:
+        patch["last_attempt_epoch"] = 0  # เปิดแล้วอัปเดตรอบแรกทันที (ภายใน ~15 วินาที)
+    return _source_out(_update_source(sid, patch))
+
+
+@app.get("/api/sources/{sid}/chunks")
+def get_source_chunks(sid: str):
+    src = _get_source(sid)
+    return get_kb_file_chunks(src["kb_id"], _rt_tag(sid))
+
+
+# ══════════════════════════════════════════════
 # Skill Sets
 # ══════════════════════════════════════════════
 
@@ -1300,6 +1595,10 @@ class BotCreateRequest(BaseModel):
     quick_chat_tags: list[str] = Field(default_factory=list)
     llm_model_id: str = ""      # ว่าง = ค่าเริ่มต้น
     rerank_model_id: str = ""   # ว่าง = ค่าเริ่มต้น
+    # หน้าต้อนรับในหน้าแชท — ว่าง = ไม่แสดง (ข้อความต้อนรับว่าง → ใช้คำอธิบายบอท)
+    welcome_label: str = ""
+    welcome_message: str = ""
+    welcome_icon: str = "sparkles"
 
 
 class BotUpdateRequest(BaseModel):
@@ -1313,6 +1612,9 @@ class BotUpdateRequest(BaseModel):
     quick_chat_tags: list[str] | None = None
     llm_model_id: str | None = None
     rerank_model_id: str | None = None
+    welcome_label: str | None = None
+    welcome_message: str | None = None
+    welcome_icon: str | None = None
 
 
 def _enrich(bot: dict) -> dict:
@@ -1325,6 +1627,9 @@ def _enrich(bot: dict) -> dict:
         **bot,
         "llm_model_id": bot.get("llm_model_id") or "",
         "rerank_model_id": bot.get("rerank_model_id") or "",
+        "welcome_label": bot.get("welcome_label") or "",
+        "welcome_message": bot.get("welcome_message") or "",
+        "welcome_icon": bot.get("welcome_icon") or "sparkles",
         "llm_name": llm["name"] if llm else None,
         "rerank_name": rr["name"] if rr else None,
         "kb_names": [kbs[k]["name"] for k in bot["kb_ids"] if k in kbs],
@@ -1383,6 +1688,8 @@ def create_bot(req: BotCreateRequest):
         "system_prompt": req.system_prompt or DEFAULT_SYSTEM_PROMPT, "use_rerank": req.use_rerank,
         "quick_chat_enabled": req.quick_chat_enabled, "quick_chat_tags": [t.strip() for t in req.quick_chat_tags],
         "llm_model_id": req.llm_model_id, "rerank_model_id": req.rerank_model_id,
+        "welcome_label": req.welcome_label.strip(), "welcome_message": req.welcome_message.strip(),
+        "welcome_icon": req.welcome_icon.strip() or "sparkles",
         "created_at": _now(), "last_chatted_at": None,
     }
     db_put("bots", bid, bot)

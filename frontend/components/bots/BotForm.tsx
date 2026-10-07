@@ -2,6 +2,7 @@
 
 import { useState, type KeyboardEvent } from "react";
 import { Loader2, Plus, X } from "lucide-react";
+import { BOT_ICONS } from "@/lib/botIcons";
 import { Button } from "@/components/ui/Button";
 import type { KnowledgeBase, RegistryModel, SkillSet } from "@/lib/types";
 
@@ -19,6 +20,9 @@ export interface BotFormValues {
   quick_chat_tags: string[];
   llm_model_id: string;
   rerank_model_id: string;
+  welcome_label: string;
+  welcome_message: string;
+  welcome_icon: string;
 }
 
 export function BotForm({
@@ -47,6 +51,9 @@ export function BotForm({
   const [tagInput, setTagInput] = useState("");
   const [llmModelId, setLlmModelId] = useState(initial?.llm_model_id ?? "");
   const [rerankModelId, setRerankModelId] = useState(initial?.rerank_model_id ?? "");
+  const [welcomeLabel, setWelcomeLabel] = useState(initial?.welcome_label ?? "");
+  const [welcomeMessage, setWelcomeMessage] = useState(initial?.welcome_message ?? "");
+  const [welcomeIcon, setWelcomeIcon] = useState(initial?.welcome_icon || "sparkles");
   const llms = models.filter((m) => m.kind === "llm");
   const reranks = models.filter((m) => m.kind === "rerank");
   const defaultLlm = llms.find((m) => m.is_default);
@@ -94,6 +101,9 @@ export function BotForm({
         quick_chat_tags: quickChatTags,
         llm_model_id: llmModelId,
         rerank_model_id: rerankModelId,
+        welcome_label: welcomeLabel.trim(),
+        welcome_message: welcomeMessage.trim(),
+        welcome_icon: welcomeIcon,
       });
     } finally {
       setSubmitting(false);
@@ -120,6 +130,42 @@ export function BotForm({
           rows={2}
           className="w-full resize-none rounded-lg border border-slate-200 px-3 py-2 text-sm focus:border-brand-400 focus:outline-none focus:ring-1 focus:ring-brand-400"
         />
+      </div>
+
+      <div className="rounded-xl bg-accent-50/70 p-3 ring-1 ring-accent-200/70">
+        <p className="mb-2 text-xs font-semibold text-accent-700">หน้าต้อนรับในหน้าแชท</p>
+        <div className="mb-2.5 flex flex-wrap gap-1.5">
+          {Object.entries(BOT_ICONS).map(([key, { icon: Icon, label }]) => (
+            <button
+              key={key}
+              type="button"
+              title={label}
+              aria-label={label}
+              onClick={() => setWelcomeIcon(key)}
+              className={`flex h-9 w-9 items-center justify-center rounded-lg transition-all ${
+                welcomeIcon === key ? "bg-ink bg-ink-grad text-brand-300 shadow-ink" : "bg-white text-accent-500 ring-1 ring-accent-200 hover:text-accent-800"
+              }`}
+            >
+              <Icon size={16} />
+            </button>
+          ))}
+        </div>
+        <div className="grid gap-2">
+          <input
+            value={welcomeLabel}
+            onChange={(e) => setWelcomeLabel(e.target.value)}
+            maxLength={40}
+            placeholder="ป้ายเล็กเหนือชื่อ เช่น HR ASSISTANT (เว้นว่าง = ไม่แสดง)"
+            className="field"
+          />
+          <textarea
+            value={welcomeMessage}
+            onChange={(e) => setWelcomeMessage(e.target.value)}
+            rows={2}
+            placeholder="ข้อความต้อนรับ (เว้นว่าง = ใช้คำอธิบายด้านบน)"
+            className="field resize-none"
+          />
+        </div>
       </div>
 
       <div>

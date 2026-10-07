@@ -3,10 +3,11 @@
 import Link from "next/link";
 import { Suspense, useEffect, useRef, useState } from "react";
 import { useSearchParams } from "next/navigation";
-import { Bot, ChevronDown, Loader2, MessageSquareText, Settings2, Sparkles } from "lucide-react";
+import { Bot, ChevronDown, Loader2, MessageSquareText, Settings2 } from "lucide-react";
 import { ChatBubble } from "@/components/chat/ChatBubble";
 import { ChatInput } from "@/components/chat/ChatInput";
 import { listBots, streamChatWithBot } from "@/lib/api";
+import { botIcon } from "@/lib/botIcons";
 import type { ChatMessage, Chatbot } from "@/lib/types";
 
 function newId() {
@@ -41,19 +42,19 @@ function BotPicker({ bots, activeId, onSelect }: { bots: Chatbot[]; activeId: st
 
 function EmptyState({ bot, onPick, disabled }: { bot: Chatbot; onPick: (q: string) => void; disabled: boolean }) {
   const tags = bot.quick_chat_enabled ? bot.quick_chat_tags : [];
+  const Icon = botIcon(bot.welcome_icon);
+  const message = bot.welcome_message || bot.description;
   return (
     <div className="flex flex-1 flex-col items-center justify-center px-4 py-10 text-center">
-      <p className="eyebrow mb-5">AI Assistant</p>
+      {bot.welcome_label && <p className="eyebrow mb-5">{bot.welcome_label}</p>}
       <span className="relative mb-5">
         <span className="absolute -inset-10 rounded-full bg-gradient-to-br from-brand-300/60 via-brand-200/25 to-violet-200/20 blur-2xl" />
         <span className="relative flex h-14 w-14 items-center justify-center rounded-2xl bg-ink bg-ink-grad text-brand-300 shadow-ink">
-          <Sparkles size={22} />
+          <Icon size={22} />
         </span>
       </span>
       <h1 className="title-grad text-2xl font-semibold tracking-tight">{bot.name}</h1>
-      <p className="mt-2 max-w-md text-sm font-light leading-relaxed text-accent-500">
-        {bot.description || "ถามอะไรก็ได้เกี่ยวกับเอกสารขององค์กร บอทจะตอบจากข้อมูลที่มีอยู่"}
-      </p>
+      {message && <p className="mt-2 max-w-md whitespace-pre-line text-sm font-light leading-relaxed text-accent-500">{message}</p>}
       {tags.length > 0 && (
         <div className="mt-6 grid w-full max-w-xl gap-2 sm:grid-cols-2">
           {tags.map((t, i) => (

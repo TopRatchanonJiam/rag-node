@@ -93,6 +93,16 @@ export default function KnowledgeBasesPage() {
     }
   }
 
+  async function handleRefresh() {
+    if (!selectedId) return;
+    try {
+      setSelectedKb(await getKnowledgeBase(selectedId));
+      await refreshList();
+    } catch {
+      /* เงียบไว้ — แค่รีเฟรชตัวเลข */
+    }
+  }
+
   async function handleUpload(file: File) {
     if (!selectedId) return;
     setUploading(true);
@@ -173,6 +183,7 @@ export default function KnowledgeBasesPage() {
                 onUpload={handleUpload}
                 onDeleteFile={handleDeleteFile}
                 onDeleteKb={handleDeleteKb}
+                onRefresh={handleRefresh}
               />
             ) : (
               <p className="text-sm text-slate-400">เลือก Knowledge Base ทางซ้าย หรือสร้างใหม่</p>

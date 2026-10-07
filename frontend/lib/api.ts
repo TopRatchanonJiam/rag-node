@@ -1,4 +1,4 @@
-import type { AdminStatus, Chatbot, CheckItem, CheckResult, KnowledgeBase, ModelRole, NodeSettings, ProtocolId, ProtocolInfo, ProviderConn, ProviderModel, SkillSet } from "./types";
+import type { AdminStatus, Chatbot, CheckItem, CheckResult, KnowledgeBase, ModelRole, NodeSettings, ProtocolId, ProtocolInfo, ProviderConn, ProviderModel, RealtimeSource, RealtimeSourceInput, RealtimeSyncResult, SkillSet } from "./types";
 
 // หน้าเว็บถูกเสิร์ฟจาก node ตัวเดียวกับ API (origin เดียวกัน) — ใช้ path แบบ relative
 export const API_BASE = (process.env.NEXT_PUBLIC_API_URL || "").replace(/\/$/, "");
@@ -63,6 +63,36 @@ export async function getKnowledgeBaseFileChunks(kbId: string, filename: string)
   );
 }
 
+// ── แหล่งข้อมูลสด (Realtime API) ───────────────────────
+
+export async function listRealtimeSources(kbId: string): Promise<{ sources: RealtimeSource[] }> {
+  return request(`/api/kb/${encodeURIComponent(kbId)}/sources`);
+}
+
+export async function createRealtimeSource(kbId: string, body: RealtimeSourceInput): Promise<RealtimeSource> {
+  return request(`/api/kb/${encodeURIComponent(kbId)}/sources`, { method: "POST", body: JSON.stringify(body) });
+}
+
+export async function updateRealtimeSource(id: string, body: RealtimeSourceInput): Promise<RealtimeSource> {
+  return request(`/api/sources/${encodeURIComponent(id)}`, { method: "PUT", body: JSON.stringify(body) });
+}
+
+export async function deleteRealtimeSource(id: string): Promise<{ message: string }> {
+  return request(`/api/sources/${encodeURIComponent(id)}`, { method: "DELETE" });
+}
+
+export async function testRealtimeSource(body: RealtimeSourceInput): Promise<{ total_records: number; fields: string[]; sample: Record<string, unknown>[]; too_many: boolean }> {
+  return request("/api/sources/test", { method: "POST", body: JSON.stringify(body) });
+}
+
+export async function syncRealtimeSource(id: string): Promise<RealtimeSyncResult> {
+  return request(`/api/sources/${encodeURIComponent(id)}/sync`, { method: "POST" });
+}
+
+export async function toggleRealtimeSource(id: string, enabled: boolean): Promise<RealtimeSource> {
+  return request(`/api/sources/${encodeURIComponent(id)}/toggle`, { method: "PATCH", body: JSON.stringify({ enabled }) });
+}
+
 // ── Skill Sets ───────────────────────────────────────────
 
 export async function listSkillSets(): Promise<{ skill_sets: SkillSet[] }> {
@@ -117,6 +147,9 @@ export async function createBot(payload: {
   quick_chat_tags?: string[];
   llm_model_id?: string;
   rerank_model_id?: string;
+  welcome_label?: string;
+  welcome_message?: string;
+  welcome_icon?: string;
 }): Promise<Chatbot> {
   return request("/api/bots", { method: "POST", body: JSON.stringify(payload) });
 }
@@ -134,6 +167,9 @@ export async function updateBot(
     quick_chat_tags: string[];
     llm_model_id: string;
     rerank_model_id: string;
+    welcome_label: string;
+    welcome_message: string;
+    welcome_icon: string;
   }>
 ): Promise<Chatbot> {
   return request(`/api/bots/${encodeURIComponent(botId)}`, { method: "PUT", body: JSON.stringify(payload) });

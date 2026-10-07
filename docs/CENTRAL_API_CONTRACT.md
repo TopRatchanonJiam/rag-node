@@ -144,10 +144,14 @@ event: result   data: {"source":"report.pdf","pages":120,"parent_chunks":84,"chi
 ### `POST /v1/ingest/records` (สำหรับ connector ฝั่งลูกค้า)
 ```json
 { "request_id":"...","ctx":{...},"kb":{...},
-  "source": { "name":"realtime:pharmacy_stock" },
-  "mode": "replace",            // replace = refresh ทั้ง source, patch = อัปเดตเฉพาะแถวที่เปลี่ยน (ความหมายเหมือน sync_source เดิม)
-  "records": [ { "...": "..." } ] }   // JSON rows, จำกัดจำนวนต่อครั้ง; หลายก้อนใช้ batch + final flag
+  "source": { "name":"realtime:<source_id>", "allow_incremental": true },
+  "records": [ { "...": "..." } ] }   // JSON rows ≤ CENTRAL_MAX_RECORDS (ค่าเริ่มต้น 5000)
 ```
+- **ใช้งานแล้ว** (`features: ingest_records`) — node ดึง API ของลูกค้าเองตามรอบ แล้วส่งแถวมา central ไม่เก็บ records
+- `allow_incremental: true` (node ส่งเมื่อเคยดึงสำเร็จและต้นทางไม่เปลี่ยน) → จำนวนแถวเท่าเดิมและจับคู่ค่าได้มั่นใจ
+  จะแก้**ข้อความ** chunk (child + แถวในตาราง parent) ด้วย `set_payload` **ไม่ embed ใหม่ ไม่เรียก LLM**
+  ไม่มั่นใจจุดไหน / แถวเพิ่ม-ลด → full refresh (ลบ chunk ของ source แล้วเข้า pipeline ตารางปกติ)
+- ผล: `{mode: "unchanged"|"incremental"|"full", patched_rows, chunks, usage, cache_invalidated}`
 - connector (APScheduler + การเข้าถึงระบบภายในของลูกค้า) **ย้ายไปอยู่ฝั่งลูกค้า** แล้วส่งแถวมาให้ central ประมวลผลผ่าน pipeline เดียวกับ CSV
 
 ## 6. KB / collection

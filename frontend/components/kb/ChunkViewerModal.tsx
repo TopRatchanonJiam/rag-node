@@ -56,7 +56,7 @@ async function copyText(text: string) {
   await navigator.clipboard.writeText(text);
 }
 
-export function ChunkViewerModal({ kbId, filename, onClose }: { kbId: string; filename: string; onClose: () => void }) {
+export function ChunkViewerModal({ kbId, filename, title, onClose }: { kbId: string; filename: string; title?: string; onClose: () => void }) {
   const [chunks, setChunks] = useState<Chunk[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [filterType, setFilterType] = useState<string>("all");
@@ -105,7 +105,7 @@ export function ChunkViewerModal({ kbId, filename, onClose }: { kbId: string; fi
   }
 
   return (
-    <Modal title={`Chunks: ${filename}`} onClose={onClose} size="xl">
+    <Modal title={`Chunks: ${title ?? filename}`} onClose={onClose} size="xl">
       <div className="flex flex-col gap-3">
         {error && <p className="rounded-lg bg-rose-50 px-3 py-2 text-sm text-rose-600">{error}</p>}
 

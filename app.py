@@ -1804,8 +1804,9 @@ def _chat_payload(bot: dict, message: str, stamp: dict) -> dict:
     s = load_settings()
     kb_rows = [kb for k in bot["kb_ids"] if (kb := db_get("kbs", k))]
     kbs = [kb_payload(kb, s) for kb in kb_rows]
-    skills = [{"id": s["id"], "name": s["name"], "files": [{"name": n, "content": c} for n, c in s["files"].items()]}
-              for i in bot["skill_set_ids"] if (s := db_get("skills", i))]
+    # ห้ามใช้ชื่อ s ใน walrus — มันรั่วออกมาทับตัวแปร settings ของฟังก์ชันนี้ (บอทที่มีชุดสูตรเคยแชทไม่ได้เพราะเหตุนี้)
+    skills = [{"id": sk["id"], "name": sk["name"], "files": [{"name": n, "content": c} for n, c in sk["files"].items()]}
+              for i in bot["skill_set_ids"] if (sk := db_get("skills", i))]
     cached = db_get("caches", bot["id"]) or {}
     cache = cached.get("data") if cached.get("stamp") == stamp else {}
     return {

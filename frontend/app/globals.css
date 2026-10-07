@@ -7,8 +7,15 @@ body {
   height: 100%;
 }
 
+/* พื้นหลังซ้อนชั้น: หมอกฟ้าไล่เฉด + แสงฟ้าจาง ๆ มุมขวาบน + เงาเทามุมซ้ายล่าง */
 body {
-  @apply bg-accent-50 text-accent-900 antialiased;
+  @apply text-accent-900 antialiased;
+  background-color: #eef2f6;
+  background-image:
+    radial-gradient(1100px 560px at 88% -12%, rgb(0 174 245 / 0.11), transparent 62%),
+    radial-gradient(900px 520px at -8% 108%, rgb(103 119 138 / 0.16), transparent 60%),
+    linear-gradient(180deg, #f5f8fb 0%, #e7edf3 100%);
+  background-attachment: fixed;
 }
 
 ::selection {
@@ -24,7 +31,15 @@ body {
 
 /* ช่องกรอกมาตรฐานของทั้งระบบ */
 .field {
-  @apply w-full rounded-lg border border-accent-200 bg-white px-3 py-2 text-sm text-accent-900 placeholder:text-accent-400 focus:border-brand-500 focus:outline-none focus:ring-2 focus:ring-brand-500/20 disabled:bg-accent-50 disabled:text-accent-400;
+  @apply w-full rounded-lg border border-accent-200 bg-white px-3 py-2 text-sm text-accent-900 placeholder:text-accent-400 focus:border-brand-400 focus:outline-none focus:ring-4 focus:ring-brand-400/15 disabled:bg-accent-50 disabled:text-accent-400;
+}
+/* ป้ายหัวข้อตัวห่างแบบ "PREMIUM PRODUCT" */
+.eyebrow {
+  @apply text-[10.5px] font-semibold uppercase tracking-[0.32em] text-accent-400;
+}
+/* แผงลอยมาตรฐาน */
+.surface {
+  @apply rounded-2xl bg-white shadow-float ring-1 ring-accent-200/60;
 }
 .field-label {
   @apply mb-1 block text-xs font-medium text-accent-600;

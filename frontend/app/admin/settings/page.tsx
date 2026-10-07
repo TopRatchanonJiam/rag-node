@@ -130,12 +130,12 @@ function Result({ item, okText }: { item?: CheckItem | null; okText?: string }) 
 
 function Panel({ icon, title, description, action, children }: { icon: ReactNode; title: string; description: string; action?: ReactNode; children: ReactNode }) {
   return (
-    <section className="rounded-xl border border-accent-200 bg-white">
+    <section className="surface">
       <header className="flex flex-wrap items-start justify-between gap-3 border-b border-accent-100 px-5 py-4">
         <div className="flex min-w-0 items-start gap-3">
-          <span className="mt-0.5 text-accent-400">{icon}</span>
+          <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-ink text-brand-300 shadow-ink">{icon}</span>
           <div className="min-w-0">
-            <h2 className="text-sm font-semibold text-accent-900">{title}</h2>
+            <h2 className="pt-0.5 text-sm font-semibold text-accent-900">{title}</h2>
             <p className="mt-0.5 text-xs text-accent-500">{description}</p>
           </div>
         </div>

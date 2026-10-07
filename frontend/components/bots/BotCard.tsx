@@ -42,7 +42,7 @@ export function BotCard({
       <div className="mt-auto flex items-center gap-2 pt-2">
         <Link
           href={`/?bot=${bot.id}`}
-          className="flex items-center gap-1.5 rounded-lg bg-brand-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-brand-700"
+          className="flex items-center gap-1.5 rounded-lg bg-ink px-3 py-1.5 text-xs font-medium text-white shadow-ink transition-shadow hover:shadow-glow"
         >
           <MessageSquareText size={13} /> คุยกับบอทนี้
         </Link>

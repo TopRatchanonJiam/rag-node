@@ -21,14 +21,14 @@ export function Modal({
   size?: "md" | "lg" | "xl";
 }) {
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 p-4" onClick={onClose}>
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-ink/30 p-4 backdrop-blur-sm" onClick={onClose}>
       <div
-        className={`max-h-[85vh] w-full ${MAX_WIDTH[size]} overflow-y-auto rounded-2xl bg-white shadow-xl`}
+        className={`max-h-[85vh] w-full ${MAX_WIDTH[size]} overflow-y-auto rounded-2xl bg-white shadow-soft-lg ring-1 ring-white`}
         onClick={(e) => e.stopPropagation()}
       >
         {/* header ปักหมุดไว้บนสุดของพื้นที่ scroll ไม่ให้ปุ่มปิดเลื่อนหายไปพร้อมเนื้อหาด้านล่าง */}
         <div className="sticky top-0 z-10 flex items-center justify-between bg-white px-6 py-4">
-          <h3 className="text-lg font-semibold text-slate-900">{title}</h3>
+          <h3 className="text-lg font-semibold tracking-tight text-accent-900">{title}</h3>
           <button
             type="button"
             onClick={onClose}

@@ -101,13 +101,13 @@ export function ChatInput({
           disabled={disabled}
           rows={1}
           placeholder="พิมพ์คำถาม... (Enter เพื่อส่ง)"
-          className="max-h-32 flex-1 resize-none rounded-xl border border-slate-200 px-3.5 py-2.5 text-sm focus:border-brand-400 focus:outline-none focus:ring-1 focus:ring-brand-400 disabled:bg-slate-50"
+          className="max-h-32 flex-1 resize-none rounded-xl border border-accent-200 bg-accent-50/60 px-3.5 py-2.5 text-sm focus:border-brand-400 focus:bg-white focus:outline-none focus:ring-4 focus:ring-brand-400/15 disabled:bg-slate-50"
         />
         <button
           type="button"
           onClick={submit}
           disabled={disabled || !value.trim()}
-          className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-brand-600 text-white transition-colors hover:bg-brand-700 disabled:bg-brand-300"
+          className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-ink text-brand-300 shadow-ink transition-all hover:shadow-glow disabled:bg-accent-200 disabled:text-white disabled:shadow-none"
           aria-label="Send message"
         >
           <Send size={16} />

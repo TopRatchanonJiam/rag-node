@@ -78,7 +78,7 @@ export default function BotsPage() {
       <button
         type="button"
         onClick={() => setShowCreate(true)}
-        className="flex w-fit items-center gap-1.5 rounded-lg bg-brand-600 px-4 py-2 text-sm font-medium text-white hover:bg-brand-700"
+        className="flex w-fit items-center gap-1.5 rounded-xl bg-ink px-4 py-2 text-sm font-medium text-white shadow-ink transition-shadow hover:shadow-glow"
       >
         <Plus size={15} /> สร้าง Chatbot ใหม่
       </button>

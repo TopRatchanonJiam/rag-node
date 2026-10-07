@@ -43,11 +43,12 @@ function EmptyState({ bot, onPick, disabled }: { bot: Chatbot; onPick: (q: strin
   const tags = bot.quick_chat_enabled ? bot.quick_chat_tags : [];
   return (
     <div className="flex flex-1 flex-col items-center justify-center px-4 py-10 text-center">
-      <span className="mb-4 flex h-12 w-12 items-center justify-center rounded-2xl bg-brand-600 text-white shadow-glow">
+      <p className="eyebrow mb-5">AI Assistant</p>
+      <span className="mb-5 flex h-14 w-14 items-center justify-center rounded-2xl bg-ink text-brand-300 shadow-ink">
         <Sparkles size={22} />
       </span>
-      <h1 className="text-xl font-semibold text-accent-900">{bot.name}</h1>
-      <p className="mt-1.5 max-w-md text-sm text-accent-500">
+      <h1 className="text-2xl font-semibold tracking-tight text-accent-900">{bot.name}</h1>
+      <p className="mt-2 max-w-md text-sm font-light leading-relaxed text-accent-500">
         {bot.description || "ถามอะไรก็ได้เกี่ยวกับเอกสารขององค์กร บอทจะตอบจากข้อมูลที่มีอยู่"}
       </p>
       {tags.length > 0 && (
@@ -58,7 +59,7 @@ function EmptyState({ bot, onPick, disabled }: { bot: Chatbot; onPick: (q: strin
               type="button"
               disabled={disabled}
               onClick={() => onPick(t)}
-              className="flex items-start gap-2 rounded-xl border border-accent-200 bg-white px-3.5 py-3 text-left text-sm text-accent-700 transition-colors hover:border-brand-300 hover:bg-brand-50/40 disabled:opacity-50"
+              className="flex items-start gap-2 rounded-xl bg-white/80 px-3.5 py-3 text-left text-sm text-accent-700 shadow-soft ring-1 ring-accent-200/60 transition-all hover:-translate-y-0.5 hover:shadow-float hover:ring-brand-200 disabled:opacity-50"
             >
               <MessageSquareText size={15} className="mt-0.5 shrink-0 text-brand-600" />
               {t}
@@ -135,10 +136,10 @@ function ChatApp() {
   }
 
   return (
-    <div className="flex h-[100dvh] flex-col bg-accent-50">
-      <header className="flex h-14 shrink-0 items-center justify-between gap-3 border-b border-accent-200 bg-white px-4 sm:px-6">
+    <div className="flex h-[100dvh] flex-col">
+      <header className="flex h-14 shrink-0 items-center justify-between gap-3 border-b border-white/70 bg-white/70 px-4 backdrop-blur-xl sm:px-6">
         <div className="flex min-w-0 items-center gap-2.5">
-          <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-brand-600 text-white">
+          <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-xl bg-ink text-brand-300 shadow-ink">
             <Bot size={16} />
           </span>
           <BotPicker bots={bots} activeId={activeBotId} onSelect={setActiveBotId} />
@@ -162,7 +163,7 @@ function ChatApp() {
           ) : !activeBot ? (
             <div className="m-auto max-w-sm text-center">
               <p className="text-sm text-accent-500">ยังไม่มีบอทให้ใช้งาน</p>
-              <Link href="/admin/bots/" className="mt-3 inline-block rounded-lg bg-brand-600 px-4 py-2 text-sm font-medium text-white hover:bg-brand-700">
+              <Link href="/admin/bots/" className="mt-3 inline-block rounded-xl bg-ink px-4 py-2 text-sm font-medium text-white shadow-ink hover:shadow-glow">
                 ไปสร้างบอทในหลังบ้าน
               </Link>
             </div>
@@ -180,8 +181,8 @@ function ChatApp() {
       </div>
 
       {activeBot && (
-        <div className="shrink-0 border-t border-accent-200 bg-white">
-          <div className="mx-auto w-full max-w-3xl">
+        <div className="shrink-0 px-3 pb-3 sm:px-4 sm:pb-5">
+          <div className="surface mx-auto w-full max-w-3xl overflow-hidden">
             {messages.length > 0 && activeBot.quick_chat_enabled && activeBot.quick_chat_tags.length > 0 && (
               <div className="flex gap-1.5 overflow-x-auto px-4 pt-3">
                 {activeBot.quick_chat_tags.map((t, i) => (
@@ -190,7 +191,7 @@ function ChatApp() {
                     type="button"
                     disabled={isTyping}
                     onClick={() => handleSend(t, null)}
-                    className="shrink-0 rounded-full bg-accent-100 px-3 py-1 text-xs text-accent-700 hover:bg-brand-50 hover:text-brand-700 disabled:opacity-50"
+                    className="shrink-0 rounded-full bg-accent-100/80 px-3 py-1 text-xs text-accent-700 hover:bg-brand-50 hover:text-brand-700 disabled:opacity-50"
                   >
                     {t}
                   </button>

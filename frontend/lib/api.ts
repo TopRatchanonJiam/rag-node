@@ -318,6 +318,32 @@ export async function claimLicense(): Promise<{ ok: boolean }> {
   return request("/api/admin/license/claim", { method: "POST" });
 }
 
+// ── แพ็กเกจ / ชำระเงิน ──
+export type BillingPrice = { amount: number; currency: string };
+export type BillingStatus = {
+  enabled: boolean;
+  message?: string;
+  license_type?: string;
+  valid_until?: string | null;
+  billing_status?: string | null;
+  plan?: string;
+  has_subscription?: boolean;
+  subscription_live?: boolean;
+  prices?: Partial<Record<"month" | "year", BillingPrice>>;
+};
+
+export async function getBillingStatus(): Promise<BillingStatus> {
+  return request("/api/admin/billing");
+}
+
+export async function startCheckout(interval: "month" | "year", returnUrl: string): Promise<{ url: string }> {
+  return request("/api/admin/billing/checkout", { method: "POST", body: JSON.stringify({ interval, return_url: returnUrl }) });
+}
+
+export async function openBillingPortal(returnUrl: string): Promise<{ url: string }> {
+  return request("/api/admin/billing/portal", { method: "POST", body: JSON.stringify({ return_url: returnUrl }) });
+}
+
 export async function runFullCheck(): Promise<CheckResult> {
   return request("/api/admin/check", { method: "POST" });
 }

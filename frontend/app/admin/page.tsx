@@ -5,6 +5,7 @@ import { useEffect, useState, type ReactNode } from "react";
 import { ArrowRight, Bot, Database, Loader2, PlugZap, RefreshCw, Sigma } from "lucide-react";
 import { ErrorNote, PageHeader, StatusPill } from "@/components/admin/AdminShell";
 import { Button } from "@/components/ui/Button";
+import { PlanCard } from "@/components/admin/PlanCard";
 import { claimLicense, getAdminStatus, runFullCheck } from "@/lib/api";
 import type { AdminStatus, CheckItem, CheckResult } from "@/lib/types";
 
@@ -150,6 +151,7 @@ export default function AdminOverviewPage() {
           {lic?.warnings?.map((w) => (
             <p key={w.code} className="mt-1 rounded-md bg-amber-50 px-2.5 py-1.5 text-xs text-amber-800">{w.message}</p>
           ))}
+          <PlanCard onActivated={load} />
           {check && (
             <div className="mt-3 border-t border-accent-100 pt-2">
               {(["llm", "embedding", "vector", "rerank"] as const).map((k) => (

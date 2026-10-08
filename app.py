@@ -1165,6 +1165,43 @@ def claim_license():
     return {"ok": True, "license": info.get("license"), "warnings": info.get("warnings")}
 
 
+# ── แพ็กเกจ / ชำระเงิน (Stripe อยู่ที่ central) ─────────
+# ยืนยันตัวด้วย license key ตรง ๆ ไม่ใช่ token — ตอน demo/license หมดอายุ token ขอไม่ได้ ซึ่งเป็นจังหวะที่ต้องจ่ายพอดี
+
+def _billing_call(method: str, path: str, body: dict | None = None) -> dict:
+    s = load_settings()
+    url, lic = _central(s)
+    try:
+        resp = httpx.request(method, f"{url}{path}", json=body, headers={"X-License-Key": lic}, timeout=30, verify=CENTRAL_VERIFY)
+    except httpx.HTTPError as e:
+        raise CentralError(502, "central_unreachable", f"ติดต่อ central ไม่ได้ ({type(e).__name__})")
+    if resp.status_code == 404:
+        raise CentralError(404, "billing_unavailable", "central นี้ยังไม่เปิดระบบชำระเงิน — ติดต่อผู้ให้บริการเพื่อต่ออายุ")
+    _raise_for(resp)
+    return resp.json()
+
+
+@app.get("/api/admin/billing")
+def billing_status():
+    try:
+        return _billing_call("GET", "/v1/billing/status")
+    except CentralError as e:
+        return {"enabled": False, "message": e.message}
+
+
+@app.post("/api/admin/billing/checkout")
+def billing_checkout(body: dict = Body(default={})):
+    """คืน URL หน้าชำระเงินของ Stripe — จ่ายเสร็จ Stripe พากลับมาที่ return_url (หน้าหลังบ้านของเครื่องนี้)"""
+    interval = body.get("interval") if body.get("interval") in ("month", "year") else "month"
+    return _billing_call("POST", "/v1/billing/checkout", {"interval": interval, "return_url": body.get("return_url") or ""})
+
+
+@app.post("/api/admin/billing/portal")
+def billing_portal(body: dict = Body(default={})):
+    """หน้าจัดการการชำระเงินของ Stripe (เปลี่ยนบัตร / ยกเลิก / ดูใบเสร็จ)"""
+    return _billing_call("POST", "/v1/billing/portal", {"return_url": body.get("return_url") or ""})
+
+
 @app.get("/api/usage")
 def usage():
     return get_usage()

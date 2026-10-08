@@ -313,6 +313,11 @@ export async function getAdminStatus(): Promise<AdminStatus> {
   return request("/api/admin/status");
 }
 
+// ย้าย license มาใช้ที่เครื่องนี้ (หลังถูกเครื่องอื่นแทนที่)
+export async function claimLicense(): Promise<{ ok: boolean }> {
+  return request("/api/admin/license/claim", { method: "POST" });
+}
+
 export async function runFullCheck(): Promise<CheckResult> {
   return request("/api/admin/check", { method: "POST" });
 }

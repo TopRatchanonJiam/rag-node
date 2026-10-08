@@ -45,7 +45,7 @@ def _central_multipart(path: str, payload: dict, filename: str, data: bytes, con
                               files={"file": (filename, data, content_type)})
         except httpx.HTTPError as e:
             raise node.CentralError(502, "central_unreachable", f"ติดต่อ central ไม่ได้ ({type(e).__name__})")
-        if resp.status_code == 401 and attempt == 0:
+        if attempt == 0 and node._should_reauth(resp):
             continue
         break
     node._raise_for(resp)

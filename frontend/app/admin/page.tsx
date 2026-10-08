@@ -5,7 +5,7 @@ import { useEffect, useState, type ReactNode } from "react";
 import { ArrowRight, Bot, Database, Loader2, PlugZap, RefreshCw, Sigma } from "lucide-react";
 import { ErrorNote, PageHeader, StatusPill } from "@/components/admin/AdminShell";
 import { Button } from "@/components/ui/Button";
-import { getAdminStatus, runFullCheck } from "@/lib/api";
+import { claimLicense, getAdminStatus, runFullCheck } from "@/lib/api";
 import type { AdminStatus, CheckItem, CheckResult } from "@/lib/types";
 
 
@@ -55,12 +55,29 @@ export default function AdminOverviewPage() {
   const [check, setCheck] = useState<CheckResult | null>(null);
   const [checking, setChecking] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [claiming, setClaiming] = useState(false);
 
-  useEffect(() => {
+  function load() {
     getAdminStatus()
       .then(setStatus)
       .catch((e) => setError(e instanceof Error ? e.message : "โหลดสถานะไม่สำเร็จ"));
-  }, []);
+  }
+
+  useEffect(load, []);
+
+  async function handleClaim() {
+    if (!window.confirm("ใช้ license นี้ที่เครื่องนี้? เครื่องอื่นที่ใช้อยู่ตอนนี้จะถูกตัดการเชื่อมต่อทันที")) return;
+    setClaiming(true);
+    setError(null);
+    try {
+      await claimLicense();
+      load();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "ย้าย license ไม่สำเร็จ");
+    } finally {
+      setClaiming(false);
+    }
+  }
 
   async function handleCheck() {
     setChecking(true);
@@ -121,6 +138,15 @@ export default function AdminOverviewPage() {
               <span className="text-xs text-rose-700">{String(lic?.message ?? "—")}</span>
             )}
           </Row>
+          {lic?.displaced && (
+            <div className="mt-2 rounded-lg bg-amber-50 px-3 py-2.5 text-xs text-amber-900 ring-1 ring-inset ring-amber-200">
+              <p className="font-semibold">license นี้ถูกเปิดใช้บนเครื่องอื่นล่าสุด</p>
+              <p className="mt-0.5">เครื่องนี้หยุดเชื่อมต่อ central แล้ว (1 license ใช้ได้ทีละเครื่อง)</p>
+              <Button onClick={handleClaim} disabled={claiming} className="mt-2 px-3 py-1.5 text-xs">
+                {claiming ? <Loader2 size={13} className="animate-spin" /> : <PlugZap size={13} />} ใช้ license บนเครื่องนี้
+              </Button>
+            </div>
+          )}
           {lic?.warnings?.map((w) => (
             <p key={w.code} className="mt-1 rounded-md bg-amber-50 px-2.5 py-1.5 text-xs text-amber-800">{w.message}</p>
           ))}

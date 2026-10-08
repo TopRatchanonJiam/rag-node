@@ -43,6 +43,8 @@ DATA_DIR = Path(os.environ.get("NODE_DATA_DIR") or ROOT / "data")
 DB_FILE = DATA_DIR / "node.db"
 LEGACY_STATE_FILE = DATA_DIR / "state.json"
 SECRET_KEY_FILE = DATA_DIR / "secret.key"
+# รหัสเครื่องนี้ (สุ่มครั้งแรกครั้งเดียว) — central ใช้ผูก license กับเครื่องล่าสุดที่ใช้ (กันแชร์ key)
+INSTALL_ID_FILE = DATA_DIR / "install_id"
 ORIGINALS_DIR = DATA_DIR / "originals"
 EXPORTS_DIR = DATA_DIR / "exports"
 FRONTEND_DIR = Path(os.environ.get("NODE_FRONTEND_DIR") or ROOT / "frontend" / "out")
@@ -59,9 +61,10 @@ QUICK_CHAT_MAX_TAG_LENGTH = 100
 
 # ค่าเดียวกับ bot_store.py เดิม — ใช้เมื่อสร้างบอทโดยไม่ระบุ system prompt
 DEFAULT_SYSTEM_PROMPT = (
-    "คุณคือ AI Assistant ที่ตอบคำถามโดยอ้างอิงข้อมูลจาก Context ที่ให้มาเท่านั้น "
-    "ห้ามแต่งข้อมูลที่ไม่มีใน Context หากไม่มีข้อมูลให้ตอบว่า \"ไม่พบข้อมูลใน Knowledge Base\" "
-    "พร้อมระบุว่ากำลังหาอะไรอยู่ ตอบเป็นภาษาเดียวกับคำถามของผู้ใช้"
+    "You are an AI assistant that answers using only the information in the provided Context. "
+    "Never invent information that is not in the Context. If the Context has no relevant information, "
+    "say that no information was found in the knowledge base and what you were looking for. "
+    "Reply in the same language as the user's question."
 )
 
 TIMEOUT = httpx.Timeout(connect=15, read=900, write=120, pool=15)
@@ -255,6 +258,13 @@ def _fernet() -> Fernet:
                 pass
         key = SECRET_KEY_FILE.read_text().strip()
     return Fernet(key.encode())
+
+
+def install_id() -> str:
+    if not INSTALL_ID_FILE.exists():
+        DATA_DIR.mkdir(parents=True, exist_ok=True)
+        INSTALL_ID_FILE.write_text(uuid.uuid4().hex)
+    return INSTALL_ID_FILE.read_text().strip()
 
 
 def _enc(value: str) -> str:
@@ -616,6 +626,41 @@ async def _central_error_handler(_req: Request, e: CentralError):
     return JSONResponse({"detail": f"[{e.code}] {e.message}"}, status_code=e.status if e.status < 500 else 502)
 
 
+_LICENSE_STATE_KEY = "license_state"
+DISPLACED_MESSAGE = ("license นี้ถูกเปิดใช้บนเครื่องอื่นล่าสุด — เครื่องนี้หยุดเชื่อมต่อแล้ว ถ้าต้องการใช้ที่เครื่องนี้ "
+                     "ไปที่หลังบ้าน → ภาพรวม แล้วกด ‘ใช้ license บนเครื่องนี้’")
+
+
+def license_displaced() -> bool:
+    with _db() as c:
+        row = c.execute("SELECT value FROM settings WHERE key=?", (_LICENSE_STATE_KEY,)).fetchone()
+    return bool(row and json.loads(row[0]).get("displaced"))
+
+
+def _set_license_displaced(value: bool) -> None:
+    with _db_lock, _db() as c:
+        c.execute("INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                  (_LICENSE_STATE_KEY, json.dumps({"displaced": value, "at": _now()})))
+
+
+def _should_reauth(resp: httpx.Response) -> bool:
+    """401 จาก central: ขอ token ใหม่แล้วลองอีกครั้งได้เฉพาะ token หมดอายุ/เสีย — ถ้าถูกเครื่องอื่นแทนที่
+    ห้ามขอใหม่เอง (การขอ token คือการผูก license กลับมาที่เครื่องนี้ = แย่งกันไปมา) ต้องให้ admin กดยืนยัน
+    (ต้องอ่าน body ของ response แล้วก่อนเรียก)"""
+    if resp.status_code != 401:
+        return False
+    try:
+        code = (resp.json().get("error") or {}).get("code")
+    except Exception:
+        code = None
+    if code == "device_replaced":
+        _set_license_displaced(True)
+        with _token_lock:
+            _tokens.clear()
+        return False
+    return code in (None, "token_expired", "auth_invalid")
+
+
 def _raise_for(resp: httpx.Response):
     if resp.status_code < 400:
         return
@@ -675,8 +720,10 @@ def get_token(force: bool = False, settings: dict | None = None) -> str:
             raise CentralError(500, "no_central", "ยังไม่ได้ตั้งที่อยู่ central (หลังบ้าน → การเชื่อมต่อ)")
         if not lic:
             raise CentralError(500, "no_license", "ยังไม่ได้ใส่ license key (หลังบ้าน → การเชื่อมต่อ)")
+        if license_displaced():
+            raise CentralError(401, "device_replaced", DISPLACED_MESSAGE)
         try:
-            resp = httpx.post(f"{url}/v1/auth/token", json={"license_key": lic}, timeout=20, verify=CENTRAL_VERIFY)
+            resp = httpx.post(f"{url}/v1/auth/token", json={"license_key": lic, "install_id": install_id()}, timeout=20, verify=CENTRAL_VERIFY)
         except httpx.HTTPError as e:
             raise CentralError(502, "central_unreachable", f"ติดต่อ central ที่ {url} ไม่ได้ ({type(e).__name__})")
         _raise_for(resp)
@@ -700,7 +747,7 @@ def central_json(path: str, body: dict, settings: dict | None = None) -> dict:
                               verify=CENTRAL_VERIFY)
         except httpx.HTTPError as e:
             raise CentralError(502, "central_unreachable", f"ติดต่อ central ไม่ได้ ({type(e).__name__})")
-        if resp.status_code == 401 and attempt == 0:
+        if attempt == 0 and _should_reauth(resp):
             continue
         break
     _raise_for(resp)
@@ -772,6 +819,8 @@ def save_settings(body: dict = Body(...)):
     _write_settings(new)
     with _token_lock:
         _tokens.clear()
+    if "license_key" in (incoming.get("central") or {}):
+        _set_license_displaced(False)
     return {"settings": public_settings(load_settings())}
 
 
@@ -1011,7 +1060,7 @@ def _run_check(settings: dict) -> dict:
         out["central"].update({"ok": False, "message": str(e) if isinstance(e, ValueError) else f"ติดต่อ central ไม่ได้ ({type(e).__name__})"})
         return out
     try:
-        get_token(force=True, settings=settings)
+        get_token(settings=settings)
         info = token_info(settings)
         out["license"] = {"ok": True, **(info.get("license") or {}), "warnings": info.get("warnings")}
     except CentralError as e:
@@ -1056,14 +1105,14 @@ def admin_status():
         central.update({"ok": True, "api_version": meta.get("api_version")})
     except Exception as e:
         central.update({"ok": False, "message": str(e) if isinstance(e, ValueError) else f"ติดต่อ central ไม่ได้ ({type(e).__name__})"})
-    license_info: dict = {}
+    license_info: dict = {"displaced": license_displaced()}
     if central["ok"]:
         try:
             get_token(settings=s)
             info = token_info(s)
-            license_info = {"ok": True, **(info.get("license") or {}), "warnings": info.get("warnings")}
+            license_info = {"ok": True, **(info.get("license") or {}), "warnings": info.get("warnings"), "displaced": False}
         except CentralError as e:
-            license_info = {"ok": False, "code": e.code, "message": e.message}
+            license_info = {"ok": False, "code": e.code, "message": e.message, "displaced": e.code == "device_replaced"}
 
     def default_of(kind: str) -> dict | None:
         mid, e = resolve_model(s, kind)
@@ -1083,6 +1132,16 @@ def admin_status():
                    "bots": len(db_all("bots")), "skills": len(db_all("skills"))},
         "usage": get_usage(),
     }
+
+
+@app.post("/api/admin/license/claim")
+def claim_license():
+    """ย้าย license กลับมาใช้ที่เครื่องนี้ (admin กดเอง) — เครื่องอื่นที่ใช้อยู่จะถูกตัดแทน
+    central จำกัดจำนวนครั้งที่สลับเครื่องต่อชั่วโมง กันสองเครื่องผลัดกันใช้ key เดียว"""
+    _set_license_displaced(False)
+    get_token(force=True)
+    info = token_info()
+    return {"ok": True, "license": info.get("license"), "warnings": info.get("warnings")}
 
 
 @app.get("/api/usage")
@@ -1194,8 +1253,10 @@ def _ingest_via_central(kb: dict, filename: str, data: bytes, replace_existing: 
             with httpx.stream("POST", f"{url}/v1/ingest/file", headers=headers, timeout=TIMEOUT, verify=CENTRAL_VERIFY,
                               data={"payload": json.dumps(payload, ensure_ascii=False)},
                               files={"file": (filename, data, "application/octet-stream")}) as resp:
-                if resp.status_code == 401 and attempt == 0:
-                    continue
+                if resp.status_code == 401:
+                    resp.read()
+                    if attempt == 0 and _should_reauth(resp):
+                        continue
                 if resp.status_code >= 400:
                     resp.read()
                     _raise_for(resp)
@@ -1315,6 +1376,8 @@ class SourceIn(BaseModel):
     auth_query_param: str = ""
     records_path: str = ""
     poll_interval_sec: int = 300
+    # คอลัมน์ที่ส่งไปให้บอทใช้ (ว่าง = ทุกคอลัมน์) — เลือกเฉพาะที่จำเป็นช่วยลดค่า AI ตอนแชท และลดข้อมูลที่ออกนอกเครื่อง
+    fields: list[str] = Field(default_factory=list)
     id: str | None = None  # ใช้ตอนทดสอบ: เอา token ที่บันทึกไว้มาใช้
 
 
@@ -1357,6 +1420,7 @@ def _source_fields(req: SourceIn, old: dict | None = None) -> dict:
         "auth_type": req.auth_type, "auth_token": token if req.auth_type != "none" else "",
         "auth_header_name": req.auth_header_name.strip(), "auth_query_param": req.auth_query_param.strip(),
         "records_path": req.records_path.strip(), "poll_interval_sec": int(req.poll_interval_sec),
+        "fields": [f.strip() for f in req.fields if f and f.strip()],
     }
 
 
@@ -1414,7 +1478,11 @@ def fetch_records(src: dict) -> list[dict]:
         records = [records]
     if not isinstance(records, list):
         raise ValueError(f"ตำแหน่งข้อมูลต้องชี้ไปที่รายการ (list) แต่ได้ {type(records).__name__}")
-    return [r if isinstance(r, dict) else {"value": r} for r in records]
+    rows = [r if isinstance(r, dict) else {"value": r} for r in records]
+    keep = src.get("fields") or []
+    if keep:
+        rows = [{k: r[k] for k in keep if k in r} for r in rows]
+    return rows
 
 
 def _bump_kb_revision(kb_id: str) -> None:
@@ -1524,7 +1592,7 @@ def update_source(sid: str, req: SourceIn):
     old = _get_source(sid)
     _validate_source(req)
     changed_shape = any(old.get(k) != v for k, v in _source_fields(req, old).items()
-                        if k in ("url", "method", "records_path", "body", "query_params"))
+                        if k in ("url", "method", "records_path", "body", "query_params", "fields"))
     src = {**old, **_source_fields(req, old)}
     if changed_shape:
         src["has_data"] = False  # ต้นทางเปลี่ยน — รอบหน้าโหลดใหม่ทั้งชุด ไม่ patch ทับของเก่า
@@ -1549,7 +1617,7 @@ def test_source(req: SourceIn):
     _validate_source(req)
     old = db_get("sources", req.id) if req.id else None
     try:
-        records = fetch_records(_source_fields(req, old))
+        records = fetch_records({**_source_fields(req, old), "fields": []})
     except ValueError as e:
         raise HTTPException(400, str(e))
     fields = sorted({k for r in records[:20] for k in r.keys()})
@@ -1914,8 +1982,10 @@ async def chat_stream(bot_id: str, message: str = Form(...), file: UploadFile | 
                                              headers={"Authorization": f"Bearer {token}"},
                                              data={"payload": json.dumps(payload, ensure_ascii=False)},
                                              files=file_part) as resp:
-                        if resp.status_code == 401 and attempt == 0:
-                            continue
+                        if resp.status_code == 401:
+                            await resp.aread()
+                            if attempt == 0 and _should_reauth(resp):
+                                continue
                         if resp.status_code >= 400:
                             await resp.aread()
                             _raise_for(resp)
@@ -1948,7 +2018,7 @@ async def chat(bot_id: str, message: str = Form(...), file: UploadFile | None = 
         for attempt in range(2):
             resp = await client.post(f"{url}/v1/chat", headers={"Authorization": f"Bearer {get_token(force=attempt > 0)}"},
                                      data={"payload": json.dumps(payload, ensure_ascii=False)}, files=file_part)
-            if resp.status_code == 401 and attempt == 0:
+            if attempt == 0 and _should_reauth(resp):
                 continue
             break
     _raise_for(resp)
@@ -1983,7 +2053,7 @@ async def transcribe(bot_id: str, file: UploadFile = File(...), language: str = 
                                          data={"payload": json.dumps(payload, ensure_ascii=False)}, files=file_part)
             except httpx.HTTPError as e:
                 raise CentralError(502, "central_unreachable", f"ติดต่อ central ไม่ได้ ({type(e).__name__})")
-            if resp.status_code == 401 and attempt == 0:
+            if attempt == 0 and _should_reauth(resp):
                 continue
             break
     _raise_for(resp)

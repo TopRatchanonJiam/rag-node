@@ -56,6 +56,7 @@ export interface RealtimeSource {
   auth_header_name: string;
   auth_query_param: string;
   records_path: string;
+  fields: string[];
   poll_interval_sec: number;
   enabled: boolean;
   syncing?: boolean;
@@ -189,7 +190,7 @@ export type CheckItem = {
 
 export interface CheckResult {
   central?: CheckItem & { url?: string; api_version?: string };
-  license?: CheckItem & { status?: string; valid_until?: string | null; plan?: string; warnings?: { code: string; message: string }[] };
+  license?: CheckItem & { status?: string; valid_until?: string | null; plan?: string; displaced?: boolean; warnings?: { code: string; message: string }[] };
   llm?: CheckItem;
   embedding?: CheckItem;
   vector?: CheckItem;

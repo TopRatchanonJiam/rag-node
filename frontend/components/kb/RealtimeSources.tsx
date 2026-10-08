@@ -116,6 +116,7 @@ function SourceModal({
   const [queryName, setQueryName] = useState(source?.auth_query_param ?? "");
   const [path, setPath] = useState(source?.records_path ?? "");
   const [pollSec, setPollSec] = useState(source?.poll_interval_sec ?? 300);
+  const [fields, setFields] = useState<string[]>(source?.fields ?? []);
   const [advanced, setAdvanced] = useState(!!source && (jsonText(source.headers) !== "" || jsonText(source.query_params) !== "" || jsonText(source.body) !== ""));
   const [headers, setHeaders] = useState(jsonText(source?.headers ?? {}));
   const [query, setQuery] = useState(jsonText(source?.query_params ?? {}));
@@ -137,6 +138,7 @@ function SourceModal({
       auth_query_param: queryName,
       records_path: path,
       poll_interval_sec: pollSec,
+      fields,
       headers: parseJson("Headers", headers) as Record<string, string>,
       query_params: parseJson("Query", query) as Record<string, string>,
       body: method === "POST" ? parseJson("Body", body) : {},
@@ -306,7 +308,38 @@ function SourceModal({
                 </table>
               </div>
             )}
+            <div className="border-t border-accent-100 px-3 py-2.5">
+              <p className="text-xs font-semibold text-accent-700">ช่องข้อมูลที่ให้บอทใช้</p>
+              <p className="mb-2 text-[11px] text-accent-500">
+                ไม่เลือก = ใช้ทั้งหมด · เลือกเฉพาะที่บอทต้องใช้ตอบ ช่วยลดค่า AI ทุกครั้งที่แชท และส่งข้อมูลออกนอกเครื่องน้อยลง
+              </p>
+              <div className="flex flex-wrap gap-1.5">
+                {preview.fields.map((f) => {
+                  const on = fields.includes(f);
+                  return (
+                    <button
+                      key={f}
+                      type="button"
+                      onClick={() => setFields(on ? fields.filter((x) => x !== f) : [...fields, f])}
+                      className={`rounded-full px-2.5 py-1 font-mono text-[11px] ring-1 ring-inset ${on ? "bg-ink bg-ink-grad text-white ring-transparent" : "bg-white text-accent-600 ring-accent-200 hover:ring-brand-300"}`}
+                    >
+                      {f}
+                    </button>
+                  );
+                })}
+              </div>
+              {fields.length > 0 && (
+                <p className="mt-2 text-[11px] text-accent-500">
+                  ใช้ {fields.length} จาก {preview.fields.length} ช่อง ·{" "}
+                  <button type="button" onClick={() => setFields([])} className="font-medium text-brand-700 hover:underline">ใช้ทั้งหมด</button>
+                </p>
+              )}
+            </div>
           </div>
+        )}
+
+        {!preview && fields.length > 0 && (
+          <p className="text-[11px] text-accent-500">ใช้เฉพาะ {fields.length} ช่องข้อมูลที่เลือกไว้ · กด ‘ทดสอบดึงข้อมูล’ เพื่อแก้ไข</p>
         )}
 
         <div className="flex justify-end gap-2">

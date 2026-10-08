@@ -13,17 +13,20 @@
 from __future__ import annotations
 
 import base64
+import ipaddress
 import json
 import os
 import re
 import secrets
 import sqlite3
+import ssl
 import threading
 import time
 import uuid
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
+from urllib.parse import urlparse
 
 import httpx
 from cryptography.fernet import Fernet, InvalidToken
@@ -623,9 +626,41 @@ def _raise_for(resp: httpx.Response):
     raise CentralError(resp.status_code, err.get("code") or "central_error", err.get("message") or f"central ตอบ {resp.status_code}")
 
 
-def _central(settings: dict | None = None) -> tuple[str, str]:
+# ── ช่องทางไป central ต้องปลอดภัย ─────────────────────
+# ทุก request แนบ key ของ AI + เอกสาร/ข้อมูลลูกค้าไปด้วย จึงห้ามวิ่งผ่าน http บนอินเทอร์เน็ตเด็ดขาด
+# http ยอมเฉพาะปลายทางที่ไม่ออกอินเทอร์เน็ต: เครื่องเดียวกัน, ชื่อ service ใน docker, IP วง LAN (ไว้ dev/ทดสอบ)
+# CENTRAL_CA_FILE (ไม่บังคับ) = ไฟล์ใบรับรอง/CA ที่ยอมรับได้ "อย่างเดียว" สำหรับ central (pin) แทนการเชื่อ CA ทั้งโลก
+_ca_file = os.environ.get("CENTRAL_CA_FILE", "").strip()
+CENTRAL_VERIFY: ssl.SSLContext | bool = ssl.create_default_context(cafile=_ca_file) if _ca_file else True
+
+
+def _insecure_central_reason(url: str) -> str | None:
+    if not url:
+        return None
+    u = urlparse(url)
+    if u.scheme == "https":
+        return None
+    if u.scheme != "http":
+        return "ที่อยู่ central ต้องขึ้นต้นด้วย https://"
+    host = (u.hostname or "").lower()
+    if host == "localhost" or (host and "." not in host):  # localhost หรือชื่อ service ใน docker network
+        return None
+    try:
+        ip = ipaddress.ip_address(host)
+        if not ip.is_global:  # loopback, LAN, CGNAT (เช่น Tailscale)
+            return None
+    except ValueError:
+        pass
+    return ("central ต้องเชื่อมต่อผ่าน https:// — ทุกคำขอมี API key และข้อมูลของคุณ ส่งผ่าน http บนอินเทอร์เน็ตจะถูกดักอ่านได้ "
+            "(http ใช้ได้เฉพาะเครื่องเดียวกันหรือวง LAN)")
+
+
+def _central(settings: dict | None = None, check: bool = True) -> tuple[str, str]:
     c = (settings or load_settings())["central"]
-    return (c.get("url") or "").rstrip("/"), c.get("license_key") or ""
+    url = (c.get("url") or "").rstrip("/")
+    if check and (reason := _insecure_central_reason(url)):
+        raise CentralError(400, "central_insecure", reason)
+    return url, c.get("license_key") or ""
 
 
 def get_token(force: bool = False, settings: dict | None = None) -> str:
@@ -641,7 +676,7 @@ def get_token(force: bool = False, settings: dict | None = None) -> str:
         if not lic:
             raise CentralError(500, "no_license", "ยังไม่ได้ใส่ license key (หลังบ้าน → การเชื่อมต่อ)")
         try:
-            resp = httpx.post(f"{url}/v1/auth/token", json={"license_key": lic}, timeout=20)
+            resp = httpx.post(f"{url}/v1/auth/token", json={"license_key": lic}, timeout=20, verify=CENTRAL_VERIFY)
         except httpx.HTTPError as e:
             raise CentralError(502, "central_unreachable", f"ติดต่อ central ที่ {url} ไม่ได้ ({type(e).__name__})")
         _raise_for(resp)
@@ -661,7 +696,8 @@ def central_json(path: str, body: dict, settings: dict | None = None) -> dict:
     for attempt in range(2):
         token = get_token(force=attempt > 0, settings=settings)
         try:
-            resp = httpx.post(f"{url}{path}", json=body, headers={"Authorization": f"Bearer {token}"}, timeout=TIMEOUT)
+            resp = httpx.post(f"{url}{path}", json=body, headers={"Authorization": f"Bearer {token}"}, timeout=TIMEOUT,
+                              verify=CENTRAL_VERIFY)
         except httpx.HTTPError as e:
             raise CentralError(502, "central_unreachable", f"ติดต่อ central ไม่ได้ ({type(e).__name__})")
         if resp.status_code == 401 and attempt == 0:
@@ -731,6 +767,8 @@ def save_settings(body: dict = Body(...)):
                 _apply_secret(new[section], k, v)
             elif k == "url":
                 new[section]["url"] = (v or "").strip()
+    if (reason := _insecure_central_reason(new["central"].get("url", "").rstrip("/"))):
+        raise HTTPException(400, reason)
     _write_settings(new)
     with _token_lock:
         _tokens.clear()
@@ -962,13 +1000,15 @@ def test_model(body: dict = Body(...)):
 
 def _run_check(settings: dict) -> dict:
     """ตรวจทุกส่วนด้วยค่าเริ่มต้นของแต่ละประเภท"""
-    url, _ = _central(settings)
+    url, _ = _central(settings, check=False)
     out: dict = {"central": {"url": url}}
     try:
-        meta = httpx.get(f"{url}/v1/meta", timeout=10).json()
+        if (reason := _insecure_central_reason(url)):
+            raise ValueError(reason)
+        meta = httpx.get(f"{url}/v1/meta", timeout=10, verify=CENTRAL_VERIFY).json()
         out["central"].update({"ok": True, "api_version": meta.get("api_version")})
     except Exception as e:
-        out["central"].update({"ok": False, "message": f"ติดต่อ central ไม่ได้ ({type(e).__name__})"})
+        out["central"].update({"ok": False, "message": str(e) if isinstance(e, ValueError) else f"ติดต่อ central ไม่ได้ ({type(e).__name__})"})
         return out
     try:
         get_token(force=True, settings=settings)
@@ -1007,13 +1047,15 @@ def health():
 @app.get("/api/admin/status")
 def admin_status():
     s = load_settings()
-    url, _ = _central(s)
+    url, _ = _central(s, check=False)
     central: dict = {"url": url}
     try:
-        meta = httpx.get(f"{url}/v1/meta", timeout=8).json()
+        if (reason := _insecure_central_reason(url)):
+            raise ValueError(reason)
+        meta = httpx.get(f"{url}/v1/meta", timeout=8, verify=CENTRAL_VERIFY).json()
         central.update({"ok": True, "api_version": meta.get("api_version")})
     except Exception as e:
-        central.update({"ok": False, "message": f"ติดต่อ central ไม่ได้ ({type(e).__name__})"})
+        central.update({"ok": False, "message": str(e) if isinstance(e, ValueError) else f"ติดต่อ central ไม่ได้ ({type(e).__name__})"})
     license_info: dict = {}
     if central["ok"]:
         try:
@@ -1149,7 +1191,7 @@ def _ingest_via_central(kb: dict, filename: str, data: bytes, replace_existing: 
     for attempt in range(2):
         headers = {"Authorization": f"Bearer {get_token(force=attempt > 0)}"}
         try:
-            with httpx.stream("POST", f"{url}/v1/ingest/file", headers=headers, timeout=TIMEOUT,
+            with httpx.stream("POST", f"{url}/v1/ingest/file", headers=headers, timeout=TIMEOUT, verify=CENTRAL_VERIFY,
                               data={"payload": json.dumps(payload, ensure_ascii=False)},
                               files={"file": (filename, data, "application/octet-stream")}) as resp:
                 if resp.status_code == 401 and attempt == 0:
@@ -1865,7 +1907,7 @@ async def chat_stream(bot_id: str, message: str = Form(...), file: UploadFile | 
 
     async def gen():
         try:
-            async with httpx.AsyncClient(timeout=TIMEOUT) as client:
+            async with httpx.AsyncClient(timeout=TIMEOUT, verify=CENTRAL_VERIFY) as client:
                 for attempt in range(2):
                     token = get_token(force=attempt > 0)
                     async with client.stream("POST", f"{url}/v1/chat/stream",
@@ -1902,7 +1944,7 @@ async def chat(bot_id: str, message: str = Form(...), file: UploadFile | None = 
     payload = _chat_payload(bot, message, stamp)
     file_part = await _read_file_part(file)
     url, _ = _central()
-    async with httpx.AsyncClient(timeout=TIMEOUT) as client:
+    async with httpx.AsyncClient(timeout=TIMEOUT, verify=CENTRAL_VERIFY) as client:
         for attempt in range(2):
             resp = await client.post(f"{url}/v1/chat", headers={"Authorization": f"Bearer {get_token(force=attempt > 0)}"},
                                      data={"payload": json.dumps(payload, ensure_ascii=False)}, files=file_part)
@@ -1934,7 +1976,7 @@ async def transcribe(bot_id: str, file: UploadFile = File(...), language: str = 
         raise HTTPException(400, "ไม่ได้ยินเสียง ลองอัดใหม่อีกครั้ง")
     file_part = {"file": (file.filename or "voice.wav", data, file.content_type or "audio/wav")}
     url, _ = _central(s)
-    async with httpx.AsyncClient(timeout=TIMEOUT) as client:
+    async with httpx.AsyncClient(timeout=TIMEOUT, verify=CENTRAL_VERIFY) as client:
         for attempt in range(2):
             try:
                 resp = await client.post(f"{url}/v1/stt", headers={"Authorization": f"Bearer {get_token(force=attempt > 0, settings=s)}"},

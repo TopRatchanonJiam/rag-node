@@ -40,7 +40,7 @@ def _central_multipart(path: str, payload: dict, filename: str, data: bytes, con
     for attempt in range(2):
         token = node.get_token(force=attempt > 0)
         try:
-            resp = httpx.post(f"{url}{path}", headers={"Authorization": f"Bearer {token}"}, timeout=node.TIMEOUT,
+            resp = httpx.post(f"{url}{path}", headers={"Authorization": f"Bearer {token}"}, timeout=node.TIMEOUT, verify=node.CENTRAL_VERIFY,
                               data={"payload": json.dumps(payload, ensure_ascii=False)},
                               files={"file": (filename, data, content_type)})
         except httpx.HTTPError as e:

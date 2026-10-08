@@ -752,6 +752,28 @@ def token_info(settings: dict | None = None) -> dict:
     return _tokens.get(_central(settings)) or {}
 
 
+def live_license(settings: dict | None = None) -> dict:
+    """สถานะ license ตอนนี้จาก central — ค่าใน token_info คือค่าตอนขอ token (จำไว้ได้ถึง 15 นาที) จึงไม่ทันการ
+    ระงับ/ต่ออายุ ถ้าถูกระงับ central ตอบรหัสนั้นกลับมาเป็น CentralError
+    central รุ่นเก่าที่ยังไม่มี /v1/license → ใช้ค่าที่จำไว้แทน"""
+    url, _ = _central(settings)
+    resp = None
+    for attempt in range(2):
+        token = get_token(force=attempt > 0, settings=settings)
+        try:
+            resp = httpx.get(f"{url}/v1/license", headers={"Authorization": f"Bearer {token}"}, timeout=10, verify=CENTRAL_VERIFY)
+        except httpx.HTTPError as e:
+            raise CentralError(502, "central_unreachable", f"ติดต่อ central ไม่ได้ ({type(e).__name__})")
+        if resp.status_code == 404:
+            info = token_info(settings)
+            return {"license": info.get("license"), "warnings": info.get("warnings")}
+        if attempt == 0 and _should_reauth(resp):
+            continue
+        break
+    _raise_for(resp)
+    return resp.json()
+
+
 def central_json(path: str, body: dict, settings: dict | None = None) -> dict:
     url, _ = _central(settings)
     resp = None
@@ -1081,8 +1103,7 @@ def _run_check(settings: dict) -> dict:
         out["central"].update({"ok": False, "message": str(e) if isinstance(e, ValueError) else f"ติดต่อ central ไม่ได้ ({type(e).__name__})"})
         return out
     try:
-        get_token(settings=settings)
-        info = token_info(settings)
+        info = live_license(settings)
         out["license"] = {"ok": True, **(info.get("license") or {}), "warnings": info.get("warnings")}
     except CentralError as e:
         out["license"] = {"ok": False, "code": e.code, "message": e.message}
@@ -1129,8 +1150,7 @@ def admin_status():
     license_info: dict = {"displaced": license_displaced()}
     if central["ok"]:
         try:
-            get_token(settings=s)
-            info = token_info(s)
+            info = live_license(s)
             license_info = {"ok": True, **(info.get("license") or {}), "warnings": info.get("warnings"), "displaced": False}
         except CentralError as e:
             license_info = {"ok": False, "code": e.code, "message": e.message, "displaced": e.code == "device_replaced"}

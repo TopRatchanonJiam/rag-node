@@ -51,6 +51,17 @@ function checkText(item?: CheckItem) {
   return String(item.message ?? item.error_code ?? "ใช้ไม่ได้");
 }
 
+// ป้ายสั้น ๆ ตามรหัสจาก central (ข้อความเต็มแสดงข้าง ๆ)
+const LICENSE_FAIL: Record<string, string> = {
+  license_suspended: "ระงับ",
+  license_expired: "หมดอายุ",
+  demo_expired: "ทดลองหมดเวลา",
+  device_replaced: "ใช้ที่เครื่องอื่น",
+  license_invalid: "key ไม่ถูกต้อง",
+  no_license: "ยังไม่ใส่ key",
+  central_unreachable: "ติดต่อไม่ได้",
+};
+
 export default function AdminOverviewPage() {
   const [status, setStatus] = useState<AdminStatus | null>(null);
   const [check, setCheck] = useState<CheckResult | null>(null);
@@ -64,7 +75,12 @@ export default function AdminOverviewPage() {
       .catch((e) => setError(e instanceof Error ? e.message : "โหลดสถานะไม่สำเร็จ"));
   }
 
-  useEffect(load, []);
+  useEffect(() => {
+    load();
+    // สถานะ license/central เปลี่ยนได้ตลอด (ระงับ ต่ออายุ ใช้ที่เครื่องอื่น) — ดึงใหม่ทุกนาที ไม่ต้องกดรีเฟรช
+    const t = window.setInterval(load, 60_000);
+    return () => window.clearInterval(t);
+  }, []);
 
   async function handleClaim() {
     if (!window.confirm("ใช้ license นี้ที่เครื่องนี้? เครื่องอื่นที่ใช้อยู่ตอนนี้จะถูกตัดการเชื่อมต่อทันที")) return;
@@ -136,7 +152,10 @@ export default function AdminOverviewPage() {
                 <StatusPill ok okText={lic.status ?? "active"} />
               </span>
             ) : (
-              <span className="text-xs text-rose-700">{String(lic?.message ?? "—")}</span>
+              <span className="flex items-center justify-end gap-2">
+                <span className="truncate text-xs text-rose-700">{String(lic?.message ?? "—")}</span>
+                <StatusPill ok={false} failText={LICENSE_FAIL[String(lic?.code ?? "")] ?? "ใช้ไม่ได้"} />
+              </span>
             )}
           </Row>
           {lic?.displaced && (

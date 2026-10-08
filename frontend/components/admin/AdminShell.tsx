@@ -36,9 +36,8 @@ function isActive(pathname: string, href: string) {
 
 function Logo() {
   return (
-    <span className="relative flex h-8 w-8 items-center justify-center rounded-xl rounded-bl-[4px] bg-brand-600 bg-brand-grad text-white shadow-brand">
-      <Bot size={15} />
-    </span>
+    // eslint-disable-next-line @next/next/no-img-element
+    <img src="/brand/1n9-icon.svg" alt="1n9 AI" width={32} height={32} className="h-8 w-8 shrink-0 drop-shadow-sm" />
   );
 }
 
@@ -54,7 +53,7 @@ export function AdminShell({ children }: { children: ReactNode }) {
             <Logo />
             <div className="leading-tight">
               <p className="text-sm font-semibold text-accent-900">หลังบ้าน</p>
-              <p className="text-[10px] font-medium uppercase tracking-[0.25em] text-accent-400">Console</p>
+              <p className="text-[10px] font-medium uppercase tracking-[0.25em] text-accent-400">1n9 AI · Console</p>
             </div>
           </div>
           <nav className="flex flex-1 flex-col gap-6 overflow-y-auto px-3 py-3">

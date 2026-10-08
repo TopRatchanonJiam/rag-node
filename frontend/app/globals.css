@@ -7,14 +7,14 @@ body {
   height: 100%;
 }
 
-/* พื้นหลังซ้อนชั้น: หมอกฟ้าไล่เฉด + แสงฟ้าจาง ๆ มุมขวาบน + เงาเทามุมซ้ายล่าง */
+/* พื้นหลังซ้อนชั้น: เทาอุ่นไล่เฉด + แสงชมพูจาง ๆ มุมขวาบน + เงาเทามุมซ้ายล่าง */
 body {
   @apply text-accent-900 antialiased;
-  background-color: #eef2f6;
+  background-color: #f5f1ef;
   background-image:
-    radial-gradient(1100px 560px at 88% -12%, rgb(0 174 245 / 0.11), transparent 62%),
-    radial-gradient(900px 520px at -8% 108%, rgb(103 119 138 / 0.16), transparent 60%),
-    linear-gradient(180deg, #f5f8fb 0%, #e7edf3 100%);
+    radial-gradient(1100px 560px at 88% -12%, rgb(227 98 127 / 0.09), transparent 62%),
+    radial-gradient(900px 520px at -8% 108%, rgb(123 110 105 / 0.12), transparent 60%),
+    linear-gradient(180deg, #faf8f7 0%, #f0ebe8 100%);
   background-attachment: fixed;
 }
 
@@ -41,7 +41,7 @@ body {
 .surface {
   @apply rounded-2xl bg-white bg-sheen shadow-float ring-1 ring-accent-200/60;
 }
-/* หัวเรื่องไล่จากดำหมึกไปน้ำเงินเข้ม */
+/* หัวเรื่องไล่จากดำหมึกไปแดงไวน์ */
 .title-grad {
   @apply bg-gradient-to-r from-ink via-accent-800 to-brand-800 bg-clip-text text-transparent;
 }

@@ -7,7 +7,7 @@ interface ButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
 // ปุ่มหลัก = ดำหมึก (ชั้นที่ตัดกับพื้นขาวชัดที่สุด) hover แล้วเรืองฟ้า
 const VARIANTS: Record<string, string> = {
   primary:
-    "bg-ink bg-ink-grad text-white shadow-ink hover:bg-ink-soft hover:shadow-glow disabled:bg-accent-300 disabled:bg-none disabled:shadow-none",
+    "bg-brand-600 bg-brand-grad text-white shadow-brand hover:brightness-105 hover:shadow-glow disabled:bg-accent-300 disabled:bg-none disabled:shadow-none",
   secondary:
     "bg-white text-accent-800 shadow-soft ring-1 ring-inset ring-accent-200 hover:ring-brand-300 hover:text-brand-700 disabled:text-accent-300 disabled:ring-accent-100",
   ghost: "bg-transparent text-accent-700 hover:bg-white/80 disabled:text-accent-300",

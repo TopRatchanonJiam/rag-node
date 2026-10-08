@@ -167,7 +167,7 @@ function ChatApp() {
           ) : !activeBot ? (
             <div className="m-auto max-w-sm text-center">
               <p className="text-sm text-accent-500">ยังไม่มีบอทให้ใช้งาน</p>
-              <Link href="/admin/bots/" className="mt-3 inline-block rounded-xl bg-ink bg-ink-grad px-4 py-2 text-sm font-medium text-white shadow-ink hover:shadow-glow">
+              <Link href="/admin/bots/" className="mt-3 inline-block rounded-xl bg-brand-600 bg-brand-grad px-4 py-2 text-sm font-medium text-white shadow-brand hover:shadow-glow">
                 ไปสร้างบอทในหลังบ้าน
               </Link>
             </div>

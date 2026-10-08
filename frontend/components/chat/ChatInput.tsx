@@ -181,7 +181,7 @@ export function ChatInput({
           type="button"
           onClick={submit}
           disabled={disabled || voice !== "idle" || !value.trim()}
-          className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-ink bg-ink-grad text-brand-300 shadow-ink transition-all hover:shadow-glow disabled:bg-accent-200 disabled:bg-none disabled:text-white disabled:shadow-none"
+          className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-brand-600 bg-brand-grad text-white shadow-brand transition-all hover:shadow-glow disabled:bg-accent-200 disabled:bg-none disabled:text-white disabled:shadow-none"
           aria-label="Send message"
         >
           <Send size={16} />

@@ -36,9 +36,8 @@ function isActive(pathname: string, href: string) {
 
 function Logo() {
   return (
-    <span className="relative flex h-8 w-8 items-center justify-center rounded-xl bg-ink bg-ink-grad text-white shadow-ink">
+    <span className="relative flex h-8 w-8 items-center justify-center rounded-xl rounded-bl-[4px] bg-brand-600 bg-brand-grad text-white shadow-brand">
       <Bot size={15} />
-      <span className="absolute -right-0.5 -top-0.5 h-2.5 w-2.5 rounded-full bg-azure-grad ring-2 ring-white" />
     </span>
   );
 }

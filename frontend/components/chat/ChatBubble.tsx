@@ -31,7 +31,7 @@ export function ChatBubble({ message }: { message: ChatMessage }) {
         )}
         <div
           className={`whitespace-pre-wrap rounded-2xl px-4 py-2.5 text-sm leading-relaxed shadow-soft ${
-            isUser ? "rounded-tr-sm bg-ink bg-ink-grad text-white shadow-ink" : "rounded-tl-sm bg-white text-accent-800 ring-1 ring-accent-200/60"
+            isUser ? "rounded-tr-sm bg-brand-600 bg-brand-grad text-white shadow-brand" : "rounded-tl-sm bg-white text-accent-800 ring-1 ring-accent-200/60"
           } ${message.pending ? "italic text-slate-400" : ""}`}
         >
           {message.streaming && !message.content ? (

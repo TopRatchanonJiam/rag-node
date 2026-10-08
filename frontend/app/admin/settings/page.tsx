@@ -53,6 +53,7 @@ import type {
   ProviderModel,
   RegistryModel,
   SecretMask,
+  VectorType,
 } from "@/lib/types";
 
 // ── ตกแต่ง ────────────────────────────────────────────
@@ -107,7 +108,7 @@ function SecretField({ label, mask, value, onChange, optional }: { label: string
             disabled={cleared}
             onChange={(e) => onChange(e.target.value)}
             placeholder={mask.set ? `${mask.hint} (ตั้งไว้แล้ว)` : "วางค่าที่นี่"}
-            className="field pl-8"
+            className="field !pl-8"
           />
         </div>
         {mask.set && (
@@ -593,6 +594,14 @@ function ModelGroup({
 
 type InfraKind = "vector" | "central";
 
+// ชนิด vector database ที่ central รองรับ — แต่ละชนิดใช้ช่องกรอกต่างกัน
+const VECTOR_LABEL: Record<VectorType, string> = { qdrant: "Qdrant", pgvector: "PostgreSQL (pgvector)", pinecone: "Pinecone" };
+const VECTOR_HINT: Record<VectorType, string> = {
+  qdrant: "Qdrant ที่ติดตั้งเอง หรือ Qdrant Cloud",
+  pgvector: "PostgreSQL ที่เปิด pgvector เช่น Supabase, Neon หรือเซิร์ฟเวอร์ของคุณเอง",
+  pinecone: "Pinecone (serverless) — ระบบสร้าง index ให้เอง",
+};
+
 function InfraModal({
   kind,
   settings,
@@ -607,25 +616,35 @@ function InfraModal({
   onSaved: () => Promise<void>;
 }) {
   const isVector = kind === "vector";
+  const originalType: VectorType = settings.vector.type || "qdrant";
+  const [vtype, setVtype] = useState<VectorType>(originalType);
   const original = isVector ? settings.vector.url : settings.central.url;
   const [url, setUrl] = useState(original);
   const [secret, setSecret] = useState<SecretInput>("");
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
-  const changed = url.trim() !== original || secret !== "";
+  const typeChanged = isVector && vtype !== originalType;
+  const changed = url.trim() !== original || secret !== "" || typeChanged;
+  // ช่องที่จำเป็นของแต่ละชนิด: Qdrant ต้องมี URL, pgvector/Pinecone ต้องมีค่าลับ (ของเดิมใช้ได้ถ้าชนิดไม่เปลี่ยน)
+  const hasSecret = secret !== null && (secret.trim() !== "" || (settings.vector.api_key.set && !typeChanged));
+  const valid = !isVector ? !!url.trim() : vtype === "qdrant" ? !!url.trim() : hasSecret;
 
   async function handleSave() {
     if (
       isVector &&
-      url.trim() !== original &&
+      (url.trim() !== original || typeChanged || (vtype !== "qdrant" && secret !== "")) &&
       kbCount > 0 &&
-      !window.confirm(`เปลี่ยนที่อยู่ Qdrant แล้ว Knowledge Base ${kbCount} ตัวที่มีอยู่จะหาเอกสารเดิมไม่เจอ (เอกสารยังอยู่ที่ Qdrant ตัวเก่า)\n\nยืนยันเปลี่ยน?`)
+      !window.confirm(`เปลี่ยนฐานข้อมูลแล้ว Knowledge Base ${kbCount} ตัวที่มีอยู่จะหาเอกสารเดิมไม่เจอ (เอกสารยังอยู่ที่ฐานข้อมูลตัวเก่า) ต้องอัปโหลดใหม่\n\nยืนยันเปลี่ยน?`)
     )
       return;
     setBusy(true);
     setErr(null);
     try {
-      await saveSettings(isVector ? { vector: { url, api_key: secretOut(secret) } } : { central: { url, license_key: secretOut(secret) } });
+      await saveSettings(
+        isVector
+          ? { vector: { type: vtype, url: vtype === "qdrant" ? url : "", api_key: secretOut(secret) } }
+          : { central: { url, license_key: secretOut(secret) } },
+      );
       await onSaved();
       onClose();
     } catch (e) {
@@ -636,7 +655,7 @@ function InfraModal({
   }
 
   return (
-    <Modal title={isVector ? "แก้ไข Qdrant (ที่เก็บเอกสาร)" : "แก้ไข Central และ license"} onClose={onClose}>
+    <Modal title={isVector ? "แก้ไขฐานข้อมูลเอกสาร (vector database)" : "แก้ไข Central และ license"} onClose={onClose}>
       <div className="flex flex-col gap-4">
         <p className="flex items-start gap-2 rounded-lg bg-amber-50 px-3 py-2.5 text-xs leading-relaxed text-amber-800">
           <ShieldAlert size={15} className="mt-px shrink-0" />
@@ -644,22 +663,43 @@ function InfraModal({
             ? "ส่วนนี้คือที่เก็บเอกสารของทุก KB — ถ้าใส่ผิด บอทจะค้นหาเอกสารไม่เจอทันที แก้เฉพาะตอนย้ายฐานข้อมูลเท่านั้น"
             : "ถ้าใส่ผิด ทั้งแชทและการอัปโหลดจะหยุดทำงานทันที — ปกติใส่ครั้งเดียวตอนติดตั้ง หรือตอนได้ license ใหม่"}
         </p>
-        <Field label={isVector ? "URL" : "ที่อยู่ central"} hint={isVector ? "เช่น https://xxxx.cloud.qdrant.io" : "เช่น http://192.168.30.108:9000"}>
-          <input className="field font-mono text-[13px]" value={url} onChange={(e) => setUrl(e.target.value)} spellCheck={false} />
-        </Field>
+        {isVector && (
+          <Field label="ชนิดฐานข้อมูล" hint={VECTOR_HINT[vtype]}>
+            <div className="grid grid-cols-3 gap-2">
+              {(Object.keys(VECTOR_LABEL) as VectorType[]).map((t) => (
+                <button
+                  key={t}
+                  type="button"
+                  onClick={() => setVtype(t)}
+                  className={`rounded-lg px-2 py-2 text-xs font-medium ring-1 ring-inset transition ${vtype === t ? "bg-brand-50 text-brand-700 ring-brand-400" : "bg-white text-accent-600 ring-accent-200 hover:ring-brand-300"}`}
+                >
+                  {VECTOR_LABEL[t]}
+                </button>
+              ))}
+            </div>
+          </Field>
+        )}
+        {(!isVector || vtype === "qdrant") && (
+          <Field label={isVector ? "URL" : "ที่อยู่ central"} hint={isVector ? "เช่น https://xxxx.cloud.qdrant.io" : "เช่น http://192.168.30.108:9000"}>
+            <input className="field font-mono text-[13px]" value={url} onChange={(e) => setUrl(e.target.value)} spellCheck={false} />
+          </Field>
+        )}
         <SecretField
-          label={isVector ? "API key" : "License key"}
-          mask={isVector ? settings.vector.api_key : settings.central.license_key}
+          label={!isVector ? "License key" : vtype === "pgvector" ? "Connection string" : "API key"}
+          mask={!isVector ? settings.central.license_key : typeChanged ? NO_MASK : settings.vector.api_key}
           value={secret}
           onChange={setSecret}
-          optional={isVector}
+          optional={isVector && vtype === "qdrant"}
         />
+        {isVector && vtype === "pgvector" && (
+          <p className="-mt-2 text-xs text-accent-400">เช่น postgresql://user:password@host:5432/postgres — เก็บแบบเข้ารหัสเหมือน key อื่น</p>
+        )}
         {err && <p className="rounded-lg bg-rose-50 px-3 py-2 text-xs text-rose-700">{err}</p>}
         <div className="flex justify-end gap-2">
           <Button variant="secondary" onClick={onClose} disabled={busy}>
             ยกเลิก
           </Button>
-          <Button onClick={handleSave} disabled={busy || !changed || !url.trim()}>
+          <Button onClick={handleSave} disabled={busy || !changed || !valid}>
             {busy ? <Loader2 size={15} className="animate-spin" /> : <Save size={15} />} บันทึกและตรวจการเชื่อมต่อ
           </Button>
         </div>
@@ -792,7 +832,7 @@ export default function SettingsPage() {
             ["license", check.license],
             ["LLM", check.llm],
             ["Embedding", check.embedding],
-            ["Qdrant", check.vector],
+            [VECTOR_LABEL[settings.vector.type || "qdrant"].split(" ")[0], check.vector],
             ["Rerank", check.rerank],
             ["Speech-to-Text", check.stt],
           ] as [string, CheckItem | undefined][]).map(([label, item]) => (
@@ -876,12 +916,16 @@ export default function SettingsPage() {
           <div className="grid gap-4 lg:grid-cols-2">
             <InfraCard
               icon={<Database size={17} />}
-              title="Qdrant"
+              title={VECTOR_LABEL[settings.vector.type || "qdrant"]}
               subtitle="ฐานข้อมูลที่เก็บเอกสารของทุก KB"
-              rows={[
-                ["URL", settings.vector.url || "— ไม่ได้ตั้ง —"],
-                ["API key", keyText(settings.vector.api_key)],
-              ]}
+              rows={
+                (settings.vector.type || "qdrant") === "qdrant"
+                  ? [
+                      ["URL", settings.vector.url || "— ไม่ได้ตั้ง —"],
+                      ["API key", keyText(settings.vector.api_key)],
+                    ]
+                  : [[settings.vector.type === "pgvector" ? "Connection string" : "API key", keyText(settings.vector.api_key)]]
+              }
               status={check?.vector}
               onEdit={() => setEditingInfra("vector")}
             />

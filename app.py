@@ -222,6 +222,9 @@ def migrate_legacy_state() -> None:
 # การเลือกใช้จริงอยู่ที่งาน: KB เลือก embedding ตอนสร้าง (ผูกถาวร), บอทเลือก LLM/rerank (ว่าง = ค่าเริ่มต้น)
 
 SECTIONS = ("providers", "registry", "defaults", "vector", "central")
+# vector database ที่เก็บเอกสารของ KB — pgvector เก็บ connection string ไว้ในช่อง api_key (มีรหัสผ่านอยู่ข้างใน
+# จึงต้องเข้ารหัสและซ่อนแบบเดียวกับ key อื่น) ส่วน Pinecone ใช้แค่ API key
+VECTOR_TYPES = ("qdrant", "pgvector", "pinecone")
 LEGACY_SECTIONS = ("llm", "embedding", "rerank", "models")
 KINDS = ("llm", "embedding", "rerank", "stt")
 LEGACY_KINDS = ("llm", "embedding", "rerank")  # การตั้งค่ารุ่นแรก (ยังไม่มี stt)
@@ -383,7 +386,7 @@ def _defaults_from_env() -> dict:
         "rerank": {"api_key": _env("RERANK_API_KEY"),
                    "model": _env("RERANK_MODEL", "Qwen/Qwen3-Reranker-0.6B") if _env("RERANK_API_KEY") else "",
                    "base_url": _env("RERANK_BASE_URL", "https://api.siliconflow.com/v1")},
-        "vector": {"url": _env("QDRANT_URL"), "api_key": _env("QDRANT_API_KEY")},
+        "vector": {"type": _env("VECTOR_TYPE", "qdrant"), "url": _env("QDRANT_URL"), "api_key": _env("QDRANT_API_KEY")},
         "central": {"url": _env("CENTRAL_URL", "http://127.0.0.1:9000"), "license_key": _env("LICENSE_KEY")},
     })
 
@@ -427,6 +430,7 @@ def load_settings() -> dict:
     for section, secret in (("vector", "api_key"), ("central", "license_key")):
         settings[section].setdefault("url", "")
         settings[section].setdefault(secret, "")
+    settings["vector"].setdefault("type", "qdrant")
     _settings_cache = settings
     return settings
 
@@ -493,7 +497,8 @@ def public_settings(settings: dict) -> dict:
                     "used_by": usage.get(mid, {"kbs": [], "bots": []})}
                    for mid, e in settings["registry"].items()],
         "defaults": settings["defaults"],
-        "vector": {"url": settings["vector"].get("url", ""), "api_key": _mask(settings["vector"].get("api_key", ""))},
+        "vector": {"type": settings["vector"].get("type") or "qdrant", "url": settings["vector"].get("url", ""),
+                   "api_key": _mask(settings["vector"].get("api_key", ""))},
         "central": {"url": settings["central"].get("url", ""), "license_key": _mask(settings["central"].get("license_key", ""))},
     }
 
@@ -543,13 +548,23 @@ def model_creds(s: dict, entry: dict | None) -> dict:
     return out
 
 
+def vector_creds(s: dict) -> dict:
+    v = s["vector"]
+    kind = v.get("type") or "qdrant"
+    if kind == "pgvector":
+        return {"type": "pgvector", "url": v.get("api_key") or ""}
+    if kind == "pinecone":
+        return {"type": "pinecone", "api_key": v.get("api_key") or None}
+    return {"url": v.get("url", ""), "api_key": v.get("api_key") or None}
+
+
 def credentials(settings: dict | None = None, *, llm_id: str | None = None, embedding_id: str | None = None,
                 rerank_id: str | None = None, use_rerank: bool = False) -> dict:
     s = settings or load_settings()
     creds = {
         "llm": model_creds(s, resolve_model(s, "llm", llm_id)[1]),
         "embedding": model_creds(s, resolve_model(s, "embedding", embedding_id)[1]),
-        "vector": {"url": s["vector"].get("url", ""), "api_key": s["vector"].get("api_key") or None},
+        "vector": vector_creds(s),
     }
     if use_rerank:
         rr = model_creds(s, resolve_model(s, "rerank", rerank_id)[1])
@@ -804,7 +819,7 @@ def get_settings():
 
 @app.put("/api/admin/settings")
 def save_settings(body: dict = Body(...)):
-    """บันทึกโครงสร้างพื้นฐาน (Qdrant, central/license) — การเชื่อมต่อและคลังโมเดลมี endpoint ของตัวเอง"""
+    """บันทึกโครงสร้างพื้นฐาน (vector database, central/license) — การเชื่อมต่อและคลังโมเดลมี endpoint ของตัวเอง"""
     s = load_settings()
     incoming = body.get("settings") or {}
     new = json.loads(json.dumps(s))
@@ -814,6 +829,12 @@ def save_settings(body: dict = Body(...)):
                 _apply_secret(new[section], k, v)
             elif k == "url":
                 new[section]["url"] = (v or "").strip()
+            elif k == "type" and section == "vector":
+                if v not in VECTOR_TYPES:
+                    raise HTTPException(400, f"ชนิดฐานข้อมูลต้องเป็น {', '.join(VECTOR_TYPES)}")
+                new["vector"]["type"] = v
+                if v != "qdrant":
+                    new["vector"]["url"] = ""  # URL ใช้กับ Qdrant เท่านั้น — ไม่ให้ค่าเก่าค้างไปปนกับชนิดอื่น
     if (reason := _insecure_central_reason(new["central"].get("url", "").rstrip("/"))):
         raise HTTPException(400, reason)
     _write_settings(new)

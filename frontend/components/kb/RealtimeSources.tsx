@@ -218,7 +218,7 @@ function SourceModal({
                   <input
                     type="password"
                     autoComplete="new-password"
-                    className="field pl-8"
+                    className="field !pl-8"
                     value={token ?? ""}
                     disabled={token === null}
                     onChange={(e) => setToken(e.target.value)}

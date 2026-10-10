@@ -27,7 +27,7 @@
       "mode_gemini": "Gemini only",
       "mode_gemini_desc": "Simplest. One key for answering and document search.",
       "mode_both": "Gemini + SiliconFlow",
-      "mode_both_desc": "The combination we have tested most for accuracy. Needs 2 keys.",
+      "mode_both_desc": "Separate providers for answering and document search. Needs 2 keys.",
       "gemini_key": "Gemini API key",
       "gemini_help": "Create one free in Google AI Studio",
       "sf_key": "SiliconFlow API key",

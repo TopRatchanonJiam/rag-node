@@ -347,3 +347,27 @@ export async function openBillingPortal(returnUrl: string): Promise<{ url: strin
 export async function runFullCheck(): Promise<CheckResult> {
   return request("/api/admin/check", { method: "POST" });
 }
+
+// ── ตั้งค่าครั้งแรก ─────────────────────────────────────
+
+export type SetupStatus = {
+  needs_setup: boolean;
+  has_license: boolean;
+  has_llm: boolean;
+  has_embedding: boolean;
+  has_password: boolean;
+  password_from_env: boolean;
+  central_url: string;
+  admin_user: string;
+};
+
+export const getSetup = () => request<SetupStatus>("/api/admin/setup");
+export const startTrial = (email: string) =>
+  request<SetupStatus & { demo_hours?: number }>("/api/admin/setup/demo", { method: "POST", body: JSON.stringify({ email }) });
+export const saveLicenseKey = (license_key: string) =>
+  request<SetupStatus>("/api/admin/setup/license", { method: "POST", body: JSON.stringify({ license_key }) });
+export const setupAi = (body: { mode: "gemini" | "gemini_siliconflow"; gemini_key: string; siliconflow_key?: string }) =>
+  request<SetupStatus>("/api/admin/setup/ai", { method: "POST", body: JSON.stringify(body) });
+export const setupPassword = (password: string) =>
+  request<SetupStatus>("/api/admin/setup/password", { method: "POST", body: JSON.stringify({ password }) });
+export const finishSetup = () => request<SetupStatus>("/api/admin/setup/finish", { method: "POST" });

@@ -2,8 +2,9 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import type { ReactNode } from "react";
+import { useEffect, type ReactNode } from "react";
 import { Bot, Database, LayoutDashboard, MessageSquareText, PlugZap, Sigma } from "lucide-react";
+import { getSetup } from "@/lib/api";
 
 // เมนูหลังบ้านแบ่ง 2 กลุ่มตามหน้าที่: งานของ "คนดูแลความรู้" (เนื้อหา/บอท) กับงานของ "คนดูแลระบบ"
 // (การเชื่อมต่อ AI/key) — ให้มอบหมายงานแยกคนได้ และไม่หลงไปแก้ key ระหว่างอัปโหลดเอกสาร
@@ -43,6 +44,12 @@ function Logo() {
 
 export function AdminShell({ children }: { children: ReactNode }) {
   const pathname = usePathname() || "/";
+  // เครื่องที่ยังตั้งค่าไม่ครบ (ไม่มี license หรือ AI key) พาไปหน้าตั้งค่าครั้งแรก
+  useEffect(() => {
+    getSetup()
+      .then((s) => s.needs_setup && window.location.replace("/setup/"))
+      .catch(() => undefined);
+  }, []);
 
   return (
     <div className="min-h-full lg:flex">

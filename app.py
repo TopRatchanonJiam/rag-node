@@ -13,6 +13,7 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import ipaddress
 import json
 import os
@@ -77,17 +78,41 @@ app = FastAPI(title="RAG Node", docs_url=None, redoc_url=None, openapi_url=None)
 # Basic Auth (เปิดเมื่อตั้ง NODE_PASSWORD เท่านั้น — ระบบ login จริงมาในขั้นถัดไป)
 # ══════════════════════════════════════════════
 
+def _hash_password(pw: str) -> str:
+    salt = secrets.token_hex(16)
+    digest = hashlib.pbkdf2_hmac("sha256", pw.encode(), bytes.fromhex(salt), 200_000).hex()
+    return f"pbkdf2_sha256$200000${salt}${digest}"
+
+
+def _check_password(pw: str, stored: str) -> bool:
+    try:
+        _, rounds, salt, digest = stored.split("$")
+        got = hashlib.pbkdf2_hmac("sha256", pw.encode(), bytes.fromhex(salt), int(rounds)).hex()
+        return secrets.compare_digest(got, digest)
+    except (ValueError, TypeError):
+        return False
+
+
+def _stored_password_hash() -> str:
+    try:
+        return (load_settings().get("setup") or {}).get("password_hash") or ""
+    except Exception:  # ฐานข้อมูลยังไม่พร้อม (ก่อน startup) — ยังไม่มีรหัส
+        return ""
+
+
 @app.middleware("http")
 async def basic_auth(request: Request, call_next):
     path = request.url.path
     protected = path.startswith(("/admin", "/api/admin")) if NODE_AUTH_SCOPE == "admin" else path != "/healthz"
-    if NODE_PASSWORD and protected:
+    stored_hash = "" if NODE_PASSWORD else _stored_password_hash()
+    if (NODE_PASSWORD or stored_hash) and protected:
         ok = False
         header = request.headers.get("authorization", "")
         if header.lower().startswith("basic "):
             try:
                 user, _, pw = base64.b64decode(header[6:]).decode().partition(":")
-                ok = secrets.compare_digest(user, NODE_USER) and secrets.compare_digest(pw, NODE_PASSWORD)
+                ok = secrets.compare_digest(user, NODE_USER) and (
+                    secrets.compare_digest(pw, NODE_PASSWORD) if NODE_PASSWORD else _check_password(pw, stored_hash))
             except Exception:
                 ok = False
         if not ok:
@@ -222,7 +247,8 @@ def migrate_legacy_state() -> None:
 # stt (ถอดเสียง) ไม่บังคับ — ถ้าไม่มี ใช้ LLM ของบอทถอดแทนได้เมื่อเป็น Gemini
 # การเลือกใช้จริงอยู่ที่งาน: KB เลือก embedding ตอนสร้าง (ผูกถาวร), บอทเลือก LLM/rerank (ว่าง = ค่าเริ่มต้น)
 
-SECTIONS = ("providers", "registry", "defaults", "vector", "central")
+# setup = สถานะหน้าตั้งค่าครั้งแรก + hash รหัสผ่านหลังบ้าน (ตั้งจากหน้าเว็บ ใช้เมื่อไม่ได้ตั้ง NODE_PASSWORD)
+SECTIONS = ("providers", "registry", "defaults", "vector", "central", "setup")
 # vector database ที่เก็บเอกสารของ KB — pgvector เก็บ connection string ไว้ในช่อง api_key (มีรหัสผ่านอยู่ข้างใน
 # จึงต้องเข้ารหัสและซ่อนแบบเดียวกับ key อื่น) ส่วน Pinecone ใช้แค่ API key
 # local = Qdrant ในเครื่องนี้ (หรือใน LAN) — central คุยผ่านท่อที่ node เปิดออกไป ไม่ต้องเปิดพอร์ต/สมัครคลาวด์
@@ -423,7 +449,7 @@ def _write_settings(settings: dict) -> None:
     with _db_lock, _db() as c:
         for section in SECTIONS:
             c.execute("INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
-                      (section, json.dumps(_secret_map(section, settings[section], _enc), ensure_ascii=False)))
+                      (section, json.dumps(_secret_map(section, settings.get(section) or {}, _enc), ensure_ascii=False)))
         c.execute(f"DELETE FROM settings WHERE key IN ({','.join('?' * len(LEGACY_SECTIONS))})", LEGACY_SECTIONS)
     _settings_cache = None
 
@@ -2184,6 +2210,155 @@ def download_export(export_id: str):
     if not rec:
         raise HTTPException(404, "ไม่พบไฟล์")
     return FileResponse(EXPORTS_DIR / rec["path"], filename=rec["filename"], media_type=rec.get("mime") or "application/octet-stream")
+
+
+# ══════════════════════════════════════════════
+# หน้าตั้งค่าครั้งแรก — ลูกค้าตั้งเองได้ครบในเบราว์เซอร์ ไม่ต้องแก้ .env
+# ══════════════════════════════════════════════
+
+GEMINI_LLM = "gemini-2.5-flash"
+GEMINI_EMBED = "gemini-embedding-001"
+SF_BASE = "https://api.siliconflow.com/v1"
+SF_EMBED, SF_EMBED_DIM, SF_RERANK = "Qwen/Qwen3-Embedding-4B", 2560, "Qwen/Qwen3-Reranker-0.6B"
+
+
+def setup_status(s: dict | None = None) -> dict:
+    s = s or load_settings()
+    has_license = bool(s["central"].get("license_key"))
+    _, llm = resolve_model(s, "llm")
+    _, emb = resolve_model(s, "embedding")
+
+    def keyed(entry):
+        prov = (s["providers"].get((entry or {}).get("provider") or "") or {})
+        return bool(entry) and (bool(prov.get("api_key")) or prov.get("type") == "ollama")
+
+    has_password = bool(NODE_PASSWORD or (s.get("setup") or {}).get("password_hash"))
+    needs = not (has_license and keyed(llm) and keyed(emb))
+    return {"needs_setup": needs and not (s.get("setup") or {}).get("completed"),
+            "has_license": has_license, "has_llm": keyed(llm), "has_embedding": keyed(emb),
+            "has_password": has_password, "password_from_env": bool(NODE_PASSWORD),
+            "central_url": s["central"].get("url", ""), "admin_user": NODE_USER}
+
+
+@app.get("/api/admin/setup")
+def get_setup():
+    return setup_status()
+
+
+def _save_license(key: str) -> None:
+    s = load_settings()
+    _update_settings(central={**s["central"], "license_key": key.strip()})
+    with _token_lock:
+        _tokens.clear()
+    _set_license_displaced(False)
+
+
+@app.post("/api/admin/setup/demo")
+def setup_demo(body: dict = Body(...)):
+    """ขอทดลองใช้ฟรีจาก central (ผูกกับเครื่องนี้) แล้วบันทึก key ให้เลย"""
+    url, _ = _central()
+    try:
+        resp = httpx.post(f"{url}/v1/demo/start", json={"email": str(body.get("email") or ""), "install_id": install_id()},
+                          timeout=20, verify=CENTRAL_VERIFY)
+    except httpx.HTTPError as e:
+        raise CentralError(502, "central_unreachable", f"ติดต่อ central ไม่ได้ ({type(e).__name__})")
+    _raise_for(resp)
+    _save_license(resp.json()["license_key"])
+    get_token(force=True)
+    return {**setup_status(), "demo_hours": resp.json().get("demo_hours")}
+
+
+@app.post("/api/admin/setup/license")
+def setup_license(body: dict = Body(...)):
+    key = str(body.get("license_key") or "").strip()
+    if not key:
+        raise HTTPException(400, "ใส่ license key")
+    old = load_settings()["central"].get("license_key", "")
+    _save_license(key)
+    try:
+        get_token(force=True)
+    except CentralError:
+        _save_license(old)  # key ใช้ไม่ได้ — คืนค่าเดิม ไม่ทิ้งเครื่องไว้กับ key เสีย
+        raise
+    return setup_status()
+
+
+def _upsert_provider(s: dict, name: str, typ: str, base_url: str, api_key: str) -> str:
+    for pid, p in s["providers"].items():
+        if p.get("type") == typ and (p.get("base_url") or "").rstrip("/") == base_url.rstrip("/"):
+            s["providers"][pid] = {**p, "api_key": api_key}
+            return pid
+    pid = "p_" + _new_id()[:8]
+    s["providers"][pid] = {"name": name, "type": typ, "base_url": base_url, "api_key": api_key}
+    return pid
+
+
+def _upsert_model(s: dict, kind: str, provider: str, model: str, dim: int | None = None) -> str:
+    for mid, e in s["registry"].items():
+        if e["kind"] == kind and e.get("provider") == provider and e["model"] == model and (kind != "embedding" or e.get("dim") == dim):
+            break
+    else:
+        mid = f"m_{_new_id()[:8]}"
+        s["registry"][mid] = {"name": model, "kind": kind, "provider": provider, "model": model, **({"dim": dim} if dim else {})}
+    s["defaults"][kind] = mid
+    return mid
+
+
+@app.post("/api/admin/setup/ai")
+def setup_ai(body: dict = Body(...)):
+    """ใส่ key แล้วระบบตั้งโมเดลให้ครบ: gemini = Gemini key ดอกเดียว · gemini_siliconflow = Gemini + SiliconFlow
+    ตรวจผ่าน central ก่อนบันทึก (ถ้า key ผิดจะไม่บันทึกอะไรเลย)"""
+    mode = body.get("mode") or "gemini"
+    gkey = str(body.get("gemini_key") or "").strip()
+    skey = str(body.get("siliconflow_key") or "").strip()
+    if not gkey:
+        raise HTTPException(400, "ใส่ Gemini API key")
+    if mode == "gemini_siliconflow" and not skey:
+        raise HTTPException(400, "ใส่ SiliconFlow API key")
+    s = json.loads(json.dumps(load_settings()))
+    g = _upsert_provider(s, "Google Gemini", "google", "", gkey)
+    llm_cfg = model_creds(s, {"provider": g, "model": GEMINI_LLM})
+    if mode == "gemini_siliconflow":
+        sf = _upsert_provider(s, "SiliconFlow", "openai_compatible", SF_BASE, skey)
+        emb_cfg = model_creds(s, {"provider": sf, "model": SF_EMBED})
+    else:
+        sf = None
+        emb_cfg = model_creds(s, {"provider": g, "model": GEMINI_EMBED})
+    creds = {"llm": llm_cfg, "embedding": emb_cfg, "vector": vector_creds(s)}
+    if sf:
+        creds["rerank"] = {"api_key": skey, "model": SF_RERANK, "base_url": SF_BASE, "params": {}}
+    check = central_json("/v1/credentials/check", {"ctx": {"credentials": creds}})
+    for kind in ("llm", "embedding"):
+        if not (check.get(kind) or {}).get("ok"):
+            item = check.get(kind) or {}
+            raise CentralError(422, item.get("error_code") or "credential_invalid",
+                               f"{kind}: {item.get('message') or 'ตรวจไม่ผ่าน'}")
+    dim = int((check.get("embedding") or {}).get("dim") or 0)
+    _upsert_model(s, "llm", g, GEMINI_LLM)
+    _upsert_model(s, "embedding", sf or g, SF_EMBED if sf else GEMINI_EMBED, dim or (SF_EMBED_DIM if sf else None))
+    if sf:
+        _upsert_model(s, "rerank", sf, SF_RERANK)
+    _write_settings(s)
+    return {**setup_status(), "embedding_dim": dim}
+
+
+@app.post("/api/admin/setup/password")
+def setup_password(body: dict = Body(...)):
+    if NODE_PASSWORD:
+        raise HTTPException(409, "รหัสผ่านถูกกำหนดจากไฟล์ตั้งค่าของเครื่อง (NODE_PASSWORD) — แก้ที่นั่น")
+    pw = str(body.get("password") or "")
+    if len(pw) < 8:
+        raise HTTPException(400, "รหัสผ่านต้องยาวอย่างน้อย 8 ตัวอักษร")
+    s = load_settings()
+    _update_settings(setup={**(s.get("setup") or {}), "password_hash": _hash_password(pw)})
+    return setup_status()
+
+
+@app.post("/api/admin/setup/finish")
+def setup_finish():
+    s = load_settings()
+    _update_settings(setup={**(s.get("setup") or {}), "completed": True})
+    return setup_status()
 
 
 # API แบบระบบเดิม (langchain-demo) ให้หน้าเว็บเดิมใช้ได้ — เปิดเฉพาะเมื่อตั้ง LEGACY_UI=1

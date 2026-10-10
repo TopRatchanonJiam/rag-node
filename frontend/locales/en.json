@@ -1,0 +1,66 @@
+{
+  "setup": {
+    "title": "First-time setup",
+    "subtitle": "3 steps, a few minutes. Everything is stored on this machine.",
+    "language": "Language",
+    "step": "Step {n} of {total}",
+    "next": "Next",
+    "back": "Back",
+    "skip": "Skip for now",
+    "done_badge": "Done",
+    "license": {
+      "title": "Get started",
+      "desc": "Free 5-hour trial, no card needed. The clock starts at your first question, not during setup.",
+      "tab_trial": "Free trial",
+      "tab_key": "I have a license key",
+      "email": "Email",
+      "email_hint": "Used to remind you before the trial ends. One trial per machine.",
+      "start_trial": "Start free trial",
+      "key": "License key",
+      "key_hint": "You get it after subscribing. Move between machines with the same key.",
+      "save_key": "Use this key",
+      "ready": "License is ready"
+    },
+    "ai": {
+      "title": "Connect AI",
+      "desc": "Bring your own key and pay the provider directly. We add no markup.",
+      "mode_gemini": "Gemini only",
+      "mode_gemini_desc": "Simplest. One key for answering and document search.",
+      "mode_both": "Gemini + SiliconFlow",
+      "mode_both_desc": "The combination we have tested most for accuracy. Needs 2 keys.",
+      "gemini_key": "Gemini API key",
+      "gemini_help": "Create one free in Google AI Studio",
+      "sf_key": "SiliconFlow API key",
+      "sf_help": "Create one at SiliconFlow",
+      "privacy_note": "Note: on Gemini's free tier Google may use your data to improve its services. Use a paid key for sensitive data.",
+      "verify": "Verify and save",
+      "verifying": "Checking with the provider…",
+      "ready": "AI is connected"
+    },
+    "password": {
+      "title": "Admin password",
+      "desc": "Stops others on your network from changing settings. Recommended if other machines can open this page.",
+      "user": "Username: {user}",
+      "password": "Password (at least 8 characters)",
+      "save": "Set password",
+      "from_env": "The password is already set in this machine's config file.",
+      "login_note": "After this, your browser will ask for the username and password.",
+      "ready": "Password is set"
+    },
+    "finish": {
+      "title": "You're ready",
+      "desc": "Next: create a knowledge base and upload your documents, then create a bot and start asking.",
+      "go_kb": "Create your first knowledge base",
+      "go_admin": "Go to admin"
+    }
+  },
+  "errors": {
+    "demo_used": "This machine or email has already used the trial. Subscribe to continue with the same key.",
+    "credential_invalid": "The API key is invalid or lacks permission. Check that you copied all of it.",
+    "provider_quota_exhausted": "The API key is out of quota or credit.",
+    "central_unreachable": "Can't reach central. Check your internet connection.",
+    "tunnel_offline": "The local database isn't connected to central yet. Wait a moment and try again.",
+    "license_invalid": "The license key is invalid.",
+    "rate_limited": "Too many attempts. Wait a moment and try again."
+  }
+}

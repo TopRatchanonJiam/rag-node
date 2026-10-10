@@ -24,7 +24,7 @@ powershell -File packaging\windows\build.ps1
 
 - `build.ps1` โหลด Qdrant สำเร็จรูป (เวอร์ชันเดียวกับ docker-compose) แล้วตรวจ SHA256 ก่อนแพ็กทุกครั้ง
   อัปเดตเวอร์ชัน: เทียบค่าแฮชกับหน้า release ของ Qdrant ก่อนแก้ใน `build.ps1`
-- เปิดเป็นโปรเซสลูกที่ `127.0.0.1:16333` พร้อม **API key ที่สุ่มครั้งแรก** (`%LOCALAPPDATA%n9\qdrant_api_key`)
+- เปิดเป็นโปรเซสลูกที่ `127.0.0.1:16333` พร้อม **API key ที่สุ่มครั้งแรก** (`%LOCALAPPDATA%\1n9\qdrant_api_key`)
   จำเป็น เพราะ Qdrant ตอบ CORS แบบเปิดกว้าง ถ้าไม่มี key เว็บไซต์ใดในเบราว์เซอร์ลูกค้าอ่านฐานข้อมูลผ่าน localhost ได้
 - ผูกกับ Job object ของ Windows: 1n9.exe ถูกฆ่ากะทันหัน Qdrant ตายตาม ไม่ค้างล็อกข้อมูล
 - node ใช้ชนิด `local` (ผ่านท่อเชื่อมไป central) เหมือน docker-compose

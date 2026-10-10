@@ -6,7 +6,7 @@
 
 ```powershell
 powershell -File packaging\windows\build.ps1
-# ผลลัพธ์: packaging\windows\dist\1n9\1n9.exe (โฟลเดอร์ ~40 MB)
+# ผลลัพธ์: packaging\windows\dist\1n9\1n9.exe (โฟลเดอร์ ~125 MB รวม Qdrant)
 ```
 
 ต้องมี Python 3.13 และ Node.js 20 (ใช้ build หน้าเว็บถ้ายังไม่มี `frontend\out`)

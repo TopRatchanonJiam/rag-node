@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import atexit
 import os
 import socket
 import sys
@@ -64,6 +65,25 @@ def open_when_ready(port: int) -> None:
         time.sleep(0.5)
 
 
+def start_qdrant():
+    """Qdrant ที่แถมมาในโปรแกรม — ไม่มีไฟล์ (เช่นรันจากซอร์ส) หรือเปิดไม่ขึ้น ก็ยังเปิด node ให้ใช้ได้ (หน้าตรวจจะบอกเอง)"""
+    if os.environ.get("QDRANT_URL") or os.environ.get("NODE_NO_BUNDLED_QDRANT"):
+        return None
+    exe = bundle_dir() / "qdrant" / "qdrant.exe"
+    if not exe.exists():
+        return None
+    from qdrant_runner import QdrantRunner
+
+    runner = QdrantRunner(exe, data_dir().parent if data_dir().name == "data" else data_dir())
+    try:
+        runner.start()
+    except Exception as e:  # noqa: BLE001
+        print(f"[1n9] Qdrant ที่แถมมาเปิดไม่ขึ้น: {e}", file=sys.stderr)
+        return None
+    atexit.register(runner.stop)
+    return runner
+
+
 def main() -> None:
     port = int(os.environ.get("NODE_PORT") or DEFAULT_PORT)
     if healthy(port):  # เปิดซ้ำ: มีตัวที่รันอยู่แล้ว แค่เปิดหน้าให้
@@ -75,6 +95,13 @@ def main() -> None:
     os.environ.setdefault("NODE_FRONTEND_DIR", str(bundle_dir() / "web"))
     os.environ.setdefault("NODE_AUTH_SCOPE", "all")
     sys.path.insert(0, str(bundle_dir()))
+
+    runner = start_qdrant()
+    if runner:
+        # ค่าเริ่มต้นตอนเปิดครั้งแรกเท่านั้น (เหมือน .env ของ Docker) — หลังจากนั้นเก็บในฐานข้อมูลของ node
+        os.environ.setdefault("VECTOR_TYPE", "local")
+        os.environ.setdefault("QDRANT_URL", runner.url)
+        os.environ.setdefault("QDRANT_API_KEY", runner.key)
 
     import uvicorn
 

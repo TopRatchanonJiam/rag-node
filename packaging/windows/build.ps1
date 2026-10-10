@@ -12,6 +12,21 @@ $venv = "$Out\.venv"
 if (-not (Test-Path "$node\frontend\out\index.html")) {
     Push-Location "$node\frontend"; npm ci --no-audit --no-fund; npm run build; Pop-Location
 }
+# Qdrant สำเร็จรูปของ Windows (เวอร์ชันเดียวกับ docker-compose) — ตรวจ SHA256 ทุกครั้ง
+# ตอนอัปเดตเวอร์ชัน: เทียบกับหน้า release ของ Qdrant ก่อนแก้ค่านี้
+$qdrantVersion = "1.19.2"
+$qdrantSha256 = "7d86596f16c6e85d45a50312f5e16ccb51e059b62e3d7308110cb65b4c799a4d"
+$cache = "$Out\.cache"
+New-Item -ItemType Directory -Force $cache | Out-Null
+$zip = "$cache\qdrant-$qdrantVersion.zip"
+if (-not (Test-Path $zip)) {
+    Invoke-WebRequest "https://github.com/qdrant/qdrant/releases/download/v$qdrantVersion/qdrant-x86_64-pc-windows-msvc.zip" -OutFile $zip
+}
+if ((Get-FileHash $zip -Algorithm SHA256).Hash.ToLower() -ne $qdrantSha256) {
+    Remove-Item $zip; throw "SHA256 ของ Qdrant ไม่ตรง — ไม่ใช้ไฟล์นี้"
+}
+Expand-Archive $zip -DestinationPath "$cache\qdrant-$qdrantVersion" -Force
+
 & $Python -m venv $venv
 & "$venv\Scripts\python.exe" -m pip install -q -r "$node\requirements.txt" pyinstaller
 
@@ -19,6 +34,8 @@ if (-not (Test-Path "$node\frontend\out\index.html")) {
     --distpath $Out --workpath "$Out\work" --specpath "$Out\work" `
     --paths $node `
     --add-data "$node\frontend\out;web" `
+    --add-binary "$cache\qdrant-$qdrantVersion\qdrant.exe;qdrant" `
+    --hidden-import qdrant_runner `
     --collect-submodules uvicorn --collect-submodules websockets `
     --hidden-import app --hidden-import legacy_api --hidden-import tunnel_client `
     --exclude-module tkinter --exclude-module pytest `

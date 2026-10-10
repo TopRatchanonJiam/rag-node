@@ -29,6 +29,7 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 import httpx
+from tunnel_client import TunnelClient
 from cryptography.fernet import Fernet, InvalidToken
 from dotenv import load_dotenv
 from fastapi import Body, FastAPI, File, Form, HTTPException, Request, UploadFile
@@ -224,7 +225,8 @@ def migrate_legacy_state() -> None:
 SECTIONS = ("providers", "registry", "defaults", "vector", "central")
 # vector database ที่เก็บเอกสารของ KB — pgvector เก็บ connection string ไว้ในช่อง api_key (มีรหัสผ่านอยู่ข้างใน
 # จึงต้องเข้ารหัสและซ่อนแบบเดียวกับ key อื่น) ส่วน Pinecone ใช้แค่ API key
-VECTOR_TYPES = ("qdrant", "pgvector", "pinecone")
+# local = Qdrant ในเครื่องนี้ (หรือใน LAN) — central คุยผ่านท่อที่ node เปิดออกไป ไม่ต้องเปิดพอร์ต/สมัครคลาวด์
+VECTOR_TYPES = ("local", "qdrant", "pgvector", "pinecone")
 LEGACY_SECTIONS = ("llm", "embedding", "rerank", "models")
 KINDS = ("llm", "embedding", "rerank", "stt")
 LEGACY_KINDS = ("llm", "embedding", "rerank")  # การตั้งค่ารุ่นแรก (ยังไม่มี stt)
@@ -374,6 +376,20 @@ def _to_current(old_rows: dict) -> dict:
     }
 
 
+def _guess_vector_type(url: str) -> str:
+    """ไม่ได้ระบุ VECTOR_TYPE: Qdrant ที่อยู่เครื่องเดียวกัน/ใน docker/วง LAN → local (ผ่านท่อ เพราะ central เข้าไม่ถึง)
+    นอกนั้น (เช่น Qdrant Cloud) → qdrant ต่อตรง — กัน .env รุ่นเก่าที่มี QDRANT_URL เป็นคลาวด์ถูกตั้งผิดชนิด"""
+    host = (urlparse(url).hostname or "").lower() if url else ""
+    if not host:
+        return "qdrant"
+    if host == "localhost" or "." not in host:
+        return "local"
+    try:
+        return "local" if not ipaddress.ip_address(host).is_global else "qdrant"
+    except ValueError:
+        return "qdrant"
+
+
 def _defaults_from_env() -> dict:
     """ค่าเริ่มต้นครั้งแรกจาก .env — node ที่ติดตั้งไว้แล้วจึงย้ายมาใช้หน้าตั้งค่าได้โดยไม่ต้องกรอกใหม่"""
     return _to_current({
@@ -386,7 +402,8 @@ def _defaults_from_env() -> dict:
         "rerank": {"api_key": _env("RERANK_API_KEY"),
                    "model": _env("RERANK_MODEL", "Qwen/Qwen3-Reranker-0.6B") if _env("RERANK_API_KEY") else "",
                    "base_url": _env("RERANK_BASE_URL", "https://api.siliconflow.com/v1")},
-        "vector": {"type": _env("VECTOR_TYPE", "qdrant"), "url": _env("QDRANT_URL"), "api_key": _env("QDRANT_API_KEY")},
+        "vector": {"type": _env("VECTOR_TYPE") or _guess_vector_type(_env("QDRANT_URL")), "url": _env("QDRANT_URL"),
+                   "api_key": _env("QDRANT_API_KEY")},
         "central": {"url": _env("CENTRAL_URL", "http://127.0.0.1:9000"), "license_key": _env("LICENSE_KEY")},
     })
 
@@ -498,7 +515,8 @@ def public_settings(settings: dict) -> dict:
                    for mid, e in settings["registry"].items()],
         "defaults": settings["defaults"],
         "vector": {"type": settings["vector"].get("type") or "qdrant", "url": settings["vector"].get("url", ""),
-                   "api_key": _mask(settings["vector"].get("api_key", ""))},
+                   "api_key": _mask(settings["vector"].get("api_key", "")),
+                   "tunnel": TUNNEL.state if settings["vector"].get("type") == "local" else None},
         "central": {"url": settings["central"].get("url", ""), "license_key": _mask(settings["central"].get("license_key", ""))},
     }
 
@@ -555,6 +573,8 @@ def vector_creds(s: dict) -> dict:
         return {"type": "pgvector", "url": v.get("api_key") or ""}
     if kind == "pinecone":
         return {"type": "pinecone", "api_key": v.get("api_key") or None}
+    if kind == "local":
+        return {"type": "qdrant", "tunnel": True}  # URL/key ของ Qdrant อยู่ที่ node เท่านั้น
     return {"url": v.get("url", ""), "api_key": v.get("api_key") or None}
 
 
@@ -816,6 +836,22 @@ def _safe_filename(name: str) -> str:
     return name
 
 
+TUNNEL = TunnelClient(
+    central_url=lambda: _central(check=False)[0],
+    token=lambda force: get_token(force=force),
+    target=lambda: (load_settings()["vector"].get("url", ""), load_settings()["vector"].get("api_key") or None),
+    verify=CENTRAL_VERIFY,
+)
+
+
+def sync_tunnel() -> None:
+    """เปิดท่อเมื่อใช้ Qdrant ในเครื่อง ปิดเมื่อเปลี่ยนไปใช้ชนิดอื่น"""
+    if load_settings()["vector"].get("type") == "local":
+        TUNNEL.start()
+    else:
+        TUNNEL.stop()
+
+
 @app.on_event("startup")
 def _startup():
     init_db()
@@ -823,6 +859,7 @@ def _startup():
     load_settings()
     ensure_kb_embeddings()
     start_realtime_scheduler()
+    sync_tunnel()
 
 
 # ══════════════════════════════════════════════
@@ -855,7 +892,7 @@ def save_settings(body: dict = Body(...)):
                 if v not in VECTOR_TYPES:
                     raise HTTPException(400, f"ชนิดฐานข้อมูลต้องเป็น {', '.join(VECTOR_TYPES)}")
                 new["vector"]["type"] = v
-                if v != "qdrant":
+                if v not in ("qdrant", "local"):
                     new["vector"]["url"] = ""  # URL ใช้กับ Qdrant เท่านั้น — ไม่ให้ค่าเก่าค้างไปปนกับชนิดอื่น
     if (reason := _insecure_central_reason(new["central"].get("url", "").rstrip("/"))):
         raise HTTPException(400, reason)
@@ -864,6 +901,7 @@ def save_settings(body: dict = Body(...)):
         _tokens.clear()
     if "license_key" in (incoming.get("central") or {}):
         _set_license_displaced(False)
+    sync_tunnel()
     return {"settings": public_settings(load_settings())}
 
 

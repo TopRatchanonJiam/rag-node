@@ -595,11 +595,24 @@ function ModelGroup({
 type InfraKind = "vector" | "central";
 
 // ชนิด vector database ที่ central รองรับ — แต่ละชนิดใช้ช่องกรอกต่างกัน
-const VECTOR_LABEL: Record<VectorType, string> = { qdrant: "Qdrant", pgvector: "PostgreSQL (pgvector)", pinecone: "Pinecone" };
+const VECTOR_LABEL: Record<VectorType, string> = {
+  local: "Qdrant ในเครื่องนี้",
+  qdrant: "Qdrant",
+  pgvector: "PostgreSQL (pgvector)",
+  pinecone: "Pinecone",
+};
 const VECTOR_HINT: Record<VectorType, string> = {
-  qdrant: "Qdrant ที่ติดตั้งเอง หรือ Qdrant Cloud",
+  local: "Qdrant ที่รันในเครื่องนี้หรือในวง LAN — central เชื่อมผ่านท่อที่ node เปิดออกไปเอง ไม่ต้องเปิดพอร์ต ข้อมูลอยู่ในเครื่องคุณ",
+  qdrant: "Qdrant ที่ central เข้าถึงได้ตรง ๆ เช่น Qdrant Cloud",
   pgvector: "PostgreSQL ที่เปิด pgvector เช่น Supabase, Neon หรือเซิร์ฟเวอร์ของคุณเอง",
   pinecone: "Pinecone (serverless) — ระบบสร้าง index ให้เอง",
+};
+
+const TUNNEL_TEXT: Record<string, string> = {
+  connected: "เชื่อมต่อแล้ว",
+  connecting: "กำลังเชื่อมต่อ…",
+  replaced: "เครื่องอื่นใช้ license นี้อยู่",
+  stopped: "ปิดอยู่",
 };
 
 function InfraModal({
@@ -627,12 +640,13 @@ function InfraModal({
   const changed = url.trim() !== original || secret !== "" || typeChanged;
   // ช่องที่จำเป็นของแต่ละชนิด: Qdrant ต้องมี URL, pgvector/Pinecone ต้องมีค่าลับ (ของเดิมใช้ได้ถ้าชนิดไม่เปลี่ยน)
   const hasSecret = secret !== null && (secret.trim() !== "" || (settings.vector.api_key.set && !typeChanged));
-  const valid = !isVector ? !!url.trim() : vtype === "qdrant" ? !!url.trim() : hasSecret;
+  const usesUrl = vtype === "qdrant" || vtype === "local";
+  const valid = !isVector ? !!url.trim() : usesUrl ? !!url.trim() : hasSecret;
 
   async function handleSave() {
     if (
       isVector &&
-      (url.trim() !== original || typeChanged || (vtype !== "qdrant" && secret !== "")) &&
+      (url.trim() !== original || typeChanged || (!usesUrl && secret !== "")) &&
       kbCount > 0 &&
       !window.confirm(`เปลี่ยนฐานข้อมูลแล้ว Knowledge Base ${kbCount} ตัวที่มีอยู่จะหาเอกสารเดิมไม่เจอ (เอกสารยังอยู่ที่ฐานข้อมูลตัวเก่า) ต้องอัปโหลดใหม่\n\nยืนยันเปลี่ยน?`)
     )
@@ -642,7 +656,7 @@ function InfraModal({
     try {
       await saveSettings(
         isVector
-          ? { vector: { type: vtype, url: vtype === "qdrant" ? url : "", api_key: secretOut(secret) } }
+          ? { vector: { type: vtype, url: usesUrl ? url : "", api_key: secretOut(secret) } }
           : { central: { url, license_key: secretOut(secret) } },
       );
       await onSaved();
@@ -665,7 +679,7 @@ function InfraModal({
         </p>
         {isVector && (
           <Field label="ชนิดฐานข้อมูล" hint={VECTOR_HINT[vtype]}>
-            <div className="grid grid-cols-3 gap-2">
+            <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
               {(Object.keys(VECTOR_LABEL) as VectorType[]).map((t) => (
                 <button
                   key={t}
@@ -679,8 +693,11 @@ function InfraModal({
             </div>
           </Field>
         )}
-        {(!isVector || vtype === "qdrant") && (
-          <Field label={isVector ? "URL" : "ที่อยู่ central"} hint={isVector ? "เช่น https://xxxx.cloud.qdrant.io" : "เช่น http://192.168.30.108:9000"}>
+        {(!isVector || usesUrl) && (
+          <Field
+            label={isVector ? "URL" : "ที่อยู่ central"}
+            hint={!isVector ? "เช่น http://192.168.30.108:9000" : vtype === "local" ? "เช่น http://127.0.0.1:6333 หรือ http://qdrant:6333 (ใน docker-compose)" : "เช่น https://xxxx.cloud.qdrant.io"}
+          >
             <input className="field font-mono text-[13px]" value={url} onChange={(e) => setUrl(e.target.value)} spellCheck={false} />
           </Field>
         )}
@@ -689,7 +706,7 @@ function InfraModal({
           mask={!isVector ? settings.central.license_key : typeChanged ? NO_MASK : settings.vector.api_key}
           value={secret}
           onChange={setSecret}
-          optional={isVector && vtype === "qdrant"}
+          optional={isVector && usesUrl}
         />
         {isVector && vtype === "pgvector" && (
           <p className="-mt-2 text-xs text-accent-400">เช่น postgresql://user:password@host:5432/postgres — เก็บแบบเข้ารหัสเหมือน key อื่น</p>
@@ -832,7 +849,7 @@ export default function SettingsPage() {
             ["license", check.license],
             ["LLM", check.llm],
             ["Embedding", check.embedding],
-            [VECTOR_LABEL[settings.vector.type || "qdrant"].split(" ")[0], check.vector],
+            ["Vector DB", check.vector],
             ["Rerank", check.rerank],
             ["Speech-to-Text", check.stt],
           ] as [string, CheckItem | undefined][]).map(([label, item]) => (
@@ -919,7 +936,12 @@ export default function SettingsPage() {
               title={VECTOR_LABEL[settings.vector.type || "qdrant"]}
               subtitle="ฐานข้อมูลที่เก็บเอกสารของทุก KB"
               rows={
-                (settings.vector.type || "qdrant") === "qdrant"
+                settings.vector.type === "local"
+                  ? [
+                      ["URL", settings.vector.url || "— ไม่ได้ตั้ง —"],
+                      ["ท่อเชื่อม central", TUNNEL_TEXT[settings.vector.tunnel?.status ?? "stopped"] ?? settings.vector.tunnel?.status ?? "—"],
+                    ]
+                  : (settings.vector.type || "qdrant") === "qdrant"
                   ? [
                       ["URL", settings.vector.url || "— ไม่ได้ตั้ง —"],
                       ["API key", keyText(settings.vector.api_key)],

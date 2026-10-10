@@ -1,4 +1,4 @@
-export type VectorType = "qdrant" | "pgvector" | "pinecone";
+export type VectorType = "local" | "qdrant" | "pgvector" | "pinecone";
 
 export interface ChatExport {
   id: string;
@@ -173,7 +173,7 @@ export interface NodeSettings {
   providers: ProviderConn[];
   models: RegistryModel[];
   defaults: Record<ModelRole, string | null>;
-  vector: { type?: VectorType; url: string; api_key: SecretMask };
+  vector: { type?: VectorType; url: string; api_key: SecretMask; tunnel?: { status: string; error?: string | null } };
   central: { url: string; license_key: SecretMask };
 }
 

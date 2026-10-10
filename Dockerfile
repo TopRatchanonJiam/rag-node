@@ -22,7 +22,7 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install -r requirements.txt
 
-COPY app.py legacy_api.py ./
+COPY app.py legacy_api.py tunnel_client.py ./
 COPY --from=web /web/out /app/web
 
 # data/ = state.json, ไฟล์ต้นฉบับ, ไฟล์ export ของลูกค้า

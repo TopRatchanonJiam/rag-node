@@ -126,6 +126,8 @@ def _needs_password(method: str, path: str) -> bool:
 
 # ชื่อโดเมนที่ใช้เปิด node ได้ (นอกจาก localhost และ IP ตรง ๆ) — เช่นเปิดผ่าน nginx ด้วยโดเมนของบริษัท
 _ALLOWED_HOSTS = {h.strip().lower() for h in os.environ.get("NODE_ALLOWED_HOSTS", "").split(",") if h.strip()}
+# หน้าเว็บที่อยู่คนละโดเมนกับ node แต่ให้เรียก API ได้ (CORS) — เช่นหน้าเว็บระบบเดิมที่ชี้มาที่ api.<โดเมน>
+_CORS_ORIGINS = [o.strip().rstrip("/") for o in os.environ.get("NODE_CORS_ORIGINS", "").split(",") if o.strip()]
 _IP_HOST = re.compile(r"^(\d{1,3}(\.\d{1,3}){3}|\[[0-9a-f:.]+\])$")
 
 
@@ -154,6 +156,8 @@ async def same_origin_guard(request: Request, call_next):
     if not _host_allowed(host):
         return Response("host not allowed — add it to NODE_ALLOWED_HOSTS", status_code=403)
     origin = request.headers.get("origin")
+    if origin and origin.rstrip("/") in _CORS_ORIGINS:
+        return await call_next(request)
     if request.method not in ("GET", "HEAD", "OPTIONS") and origin and origin != "null":
         if origin.split("://", 1)[-1].rstrip("/").lower() != host.strip().lower():  # ต้องตรงทั้งโดเมนและพอร์ต
             return Response("cross-origin request blocked", status_code=403)
@@ -2630,6 +2634,13 @@ def test_channel(channel_id: str):
         raise HTTPException(404, "ไม่พบช่องทางนี้")
     name = _fetch_line_name(row["access_token"])
     return {"ok": True, "account_name": name, "tunnel": TUNNEL.state}
+
+
+if _CORS_ORIGINS:
+    from fastapi.middleware.cors import CORSMiddleware
+
+    app.add_middleware(CORSMiddleware, allow_origins=_CORS_ORIGINS, allow_methods=["*"], allow_headers=["*"],
+                       allow_credentials=True)
 
 
 # API แบบระบบเดิม (langchain-demo) ให้หน้าเว็บเดิมใช้ได้ — เปิดเฉพาะเมื่อตั้ง LEGACY_UI=1

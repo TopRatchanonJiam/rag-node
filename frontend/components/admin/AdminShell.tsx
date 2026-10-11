@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useEffect, type ReactNode } from "react";
-import { Bot, Database, LayoutDashboard, MessageSquareText, PlugZap, Sigma } from "lucide-react";
+import { Bot, Database, LayoutDashboard, MessageSquareText, PlugZap, Share2, Sigma } from "lucide-react";
 import { getSetup } from "@/lib/api";
 
 // เมนูหลังบ้านแบ่ง 2 กลุ่มตามหน้าที่: งานของ "คนดูแลความรู้" (เนื้อหา/บอท) กับงานของ "คนดูแลระบบ"
@@ -26,7 +26,10 @@ const GROUPS = [
   {
     label: "ระบบ",
     eyebrow: "System",
-    items: [{ href: "/admin/settings", label: "การเชื่อมต่อ AI", icon: PlugZap }],
+    items: [
+      { href: "/admin/channels", label: "ช่องทาง", icon: Share2 },
+      { href: "/admin/settings", label: "การเชื่อมต่อ AI", icon: PlugZap },
+    ],
   },
 ];
 

@@ -61,6 +61,52 @@
     "central_unreachable": "Can't reach central. Check your internet connection.",
     "tunnel_offline": "The local database isn't connected to central yet. Wait a moment and try again.",
     "license_invalid": "The license key is invalid.",
-    "rate_limited": "Too many attempts. Wait a moment and try again."
+    "rate_limited": "Too many attempts. Wait a moment and try again.",
+    "device_replaced": "This license was last activated on another machine."
+  },
+  "channels": {
+    "title": "Channels",
+    "subtitle": "Let your customers talk to the bot in your existing LINE Official Account. No open ports or domain needed.",
+    "nav": "Channels",
+    "status": {
+      "tunnel": "Connection to central",
+      "connected": "Connected",
+      "connecting": "Connecting…",
+      "stopped": "Off",
+      "replaced": "Another machine is using this license"
+    },
+    "line": {
+      "title": "LINE Official Account",
+      "desc": "The bot answers text messages in one-to-one chats only. Stickers, images and groups get no reply. Replies are free and unlimited.",
+      "steps_title": "Setup (one time)",
+      "step1": "Open LINE Developers, create a Provider and a Messaging API channel (or use your existing Official Account's).",
+      "step2": "Copy the Channel secret (Basic settings tab) and issue a long-lived Channel access token (Messaging API tab), then paste both below.",
+      "step3": "Click Add channel, copy the Webhook URL into the Messaging API tab, press Verify, then turn on Use webhook.",
+      "step4": "In LINE Official Account Manager, Response settings: turn off Auto-response messages, or they will overlap with the bot.",
+      "add": "Add a LINE channel",
+      "bot": "Bot that answers",
+      "secret": "Channel secret",
+      "token": "Channel access token",
+      "keep": "Leave empty to keep the current value",
+      "save": "Save",
+      "create": "Add channel",
+      "delete": "Delete channel",
+      "confirm_delete": "Delete this channel? Customers can't talk to the bot in LINE until you add it again.",
+      "test": "Check connection",
+      "test_ok": "Connected to LINE: {name}",
+      "enabled": "Enabled",
+      "welcome": "Send a welcome message when someone adds the account",
+      "webhook": "Webhook URL",
+      "copy": "Copy",
+      "copied": "Copied",
+      "not_https": "The configured central address is not https://. LINE only delivers webhooks to public https addresses.",
+      "no_bots": "No bots yet. Create one on the Chatbots page first.",
+      "messages": "Messages answered",
+      "last": "Last message",
+      "never": "None yet",
+      "last_error": "Latest problem",
+      "pc_note": "The program must be running and online for the bot to answer. While the machine is off, messages get no reply.",
+      "unnamed": "LINE account"
+    }
   }
 }

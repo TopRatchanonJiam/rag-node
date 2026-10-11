@@ -115,6 +115,12 @@ function ChatApp() {
       setMessagesByBot((prev) => ({ ...prev, [botId]: fn(prev[botId] ?? baseline) }));
     }
 
+    // ประวัติ = ข้อความที่จบสมบูรณ์แล้วก่อนหน้านี้ (ข้ามคำตอบที่ error หรือยังไม่เสร็จ) 6 ข้อความล่าสุด
+    const history = baseline
+      .filter((m) => !m.streaming && m.content.trim() && !/^\s*\[\w+\]/.test(m.content) && !m.content.startsWith(CONNECT_ERROR_PREFIX))
+      .slice(-6)
+      .map((m) => ({ role: m.role, text: m.content }));
+
     patch((prev) => [
       ...prev,
       { id: newId(), role: "user", content, attachmentName: file?.name },
@@ -130,9 +136,9 @@ function ChatApp() {
           patch((prev) =>
             prev.map((m) => (m.id === assistantId ? { ...m, streaming: false, status: undefined, usedSkill: meta.used_skill, export: meta.export } : m))
           ),
-      });
+      }, history);
     } catch (e) {
-      const errText = `เชื่อมต่อไม่สำเร็จ: ${e instanceof Error ? e.message : "unknown error"}`;
+      const errText = `${CONNECT_ERROR_PREFIX} ${e instanceof Error ? e.message : "unknown error"}`;
       patch((prev) => prev.map((m) => (m.id === assistantId ? { ...m, streaming: false, status: undefined, content: m.content || errText } : m)));
     } finally {
       setIsTyping(false);
@@ -212,6 +218,8 @@ function ChatApp() {
     </div>
   );
 }
+
+const CONNECT_ERROR_PREFIX = "เชื่อมต่อไม่สำเร็จ:";
 
 export default function ChatPage() {
   return (

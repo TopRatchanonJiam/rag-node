@@ -39,7 +39,7 @@ Expand-Archive $zip -DestinationPath "$cache\qdrant-$qdrantVersion" -Force
     --add-data "$PSScriptRoot\1n9.ico;." `
     --hidden-import qdrant_runner `
     --collect-submodules uvicorn --collect-submodules websockets `
-    --hidden-import app --hidden-import legacy_api --hidden-import tunnel_client `
+    --hidden-import app --hidden-import legacy_api --hidden-import tunnel_client --hidden-import line_channel `
     --exclude-module tkinter --exclude-module pytest `
     "$PSScriptRoot\launcher.py"
 

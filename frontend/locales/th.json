@@ -61,6 +61,52 @@
     "central_unreachable": "ติดต่อ central ไม่ได้ ตรวจการเชื่อมต่ออินเทอร์เน็ต",
     "tunnel_offline": "ฐานข้อมูลในเครื่องยังไม่เชื่อมกับ central รอสักครู่แล้วลองใหม่",
     "license_invalid": "license key ไม่ถูกต้อง",
-    "rate_limited": "ลองถี่เกินไป รอสักครู่แล้วลองใหม่"
+    "rate_limited": "ลองถี่เกินไป รอสักครู่แล้วลองใหม่",
+    "device_replaced": "license นี้ถูกเปิดใช้บนเครื่องอื่นล่าสุด"
+  },
+  "channels": {
+    "title": "ช่องทางสนทนา",
+    "subtitle": "ให้ลูกค้าของคุณคุยกับบอทใน LINE Official Account ที่มีอยู่ — ไม่ต้องเปิดพอร์ตหรือมีโดเมน",
+    "nav": "ช่องทาง",
+    "status": {
+      "tunnel": "การเชื่อมต่อกับ central",
+      "connected": "เชื่อมต่อแล้ว",
+      "connecting": "กำลังเชื่อมต่อ…",
+      "stopped": "ปิดอยู่",
+      "replaced": "เครื่องอื่นใช้ license นี้อยู่"
+    },
+    "line": {
+      "title": "LINE Official Account",
+      "desc": "บอทตอบเฉพาะข้อความตัวอักษรในแชทเดี่ยว สติกเกอร์ รูป และกลุ่มจะไม่ถูกตอบ ตอบกลับฟรีไม่จำกัดข้อความ",
+      "steps_title": "ขั้นตอนตั้งค่า (ทำครั้งเดียว)",
+      "step1": "เปิด LINE Developers → สร้าง Provider และช่อง Messaging API (หรือใช้ของ Official Account ที่มีอยู่)",
+      "step2": "คัดลอก Channel secret (แท็บ Basic settings) และสร้าง Channel access token แบบ long-lived (แท็บ Messaging API) มาวางด้านล่าง",
+      "step3": "กดเพิ่มช่องทาง แล้วคัดลอก Webhook URL ไปวางในแท็บ Messaging API → กด Verify → เปิด Use webhook",
+      "step4": "ใน LINE Official Account Manager → การตอบกลับ: ปิด ‘ข้อความตอบกลับอัตโนมัติ’ ไม่งั้นข้อความจะซ้อนกับของบอท",
+      "add": "เพิ่มช่องทาง LINE",
+      "bot": "บอทที่ตอบ",
+      "secret": "Channel secret",
+      "token": "Channel access token",
+      "keep": "เว้นว่างไว้ = ใช้ค่าเดิม",
+      "save": "บันทึก",
+      "create": "เพิ่มช่องทาง",
+      "delete": "ลบช่องทาง",
+      "confirm_delete": "ลบช่องทางนี้? ลูกค้าจะคุยกับบอทใน LINE ไม่ได้จนกว่าจะเพิ่มใหม่",
+      "test": "ตรวจการเชื่อมต่อ",
+      "test_ok": "เชื่อมต่อ LINE ได้: {name}",
+      "enabled": "เปิดใช้งาน",
+      "welcome": "ส่งข้อความต้อนรับเมื่อมีคนเพิ่มเพื่อน",
+      "webhook": "Webhook URL",
+      "copy": "คัดลอก",
+      "copied": "คัดลอกแล้ว",
+      "not_https": "ที่อยู่ central ที่ตั้งไว้ไม่ใช่ https:// — LINE รับ webhook เฉพาะ https ที่เข้าถึงได้จากอินเทอร์เน็ต",
+      "no_bots": "ยังไม่มีบอท — สร้างบอทก่อนที่หน้า Chatbots",
+      "messages": "ข้อความที่ตอบแล้ว",
+      "last": "ข้อความล่าสุด",
+      "never": "ยังไม่มี",
+      "last_error": "ปัญหาล่าสุด",
+      "pc_note": "ต้องเปิดโปรแกรมและต่ออินเทอร์เน็ตไว้ บอทถึงจะตอบ ถ้าเครื่องปิด ข้อความช่วงนั้นจะไม่ได้คำตอบ",
+      "unnamed": "บัญชี LINE"
+    }
   }
 }

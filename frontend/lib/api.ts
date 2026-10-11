@@ -193,10 +193,13 @@ export async function streamChatWithBot(
     onChunk: (text: string) => void;
     onStatus?: (text: string) => void;
     onDone: (meta: ChatStreamDoneMeta) => void;
-  }
+  },
+  history: { role: "user" | "assistant"; text: string }[] = []
 ): Promise<void> {
   const formData = new FormData();
   formData.append("message", message);
+  // ข้อความก่อนหน้าในบทสนทนานี้ — ให้ถามต่อได้ ("แล้วสาขาบางนาล่ะ") โดยไม่ต้องพิมพ์ซ้ำ
+  if (history.length) formData.append("history", JSON.stringify(history));
   if (file) formData.append("file", file);
 
   const res = await fetch(`${API_BASE}/api/bots/${encodeURIComponent(botId)}/chat/stream`, {
@@ -371,3 +374,34 @@ export const setupAi = (body: { mode: "gemini" | "gemini_siliconflow"; gemini_ke
 export const setupPassword = (password: string) =>
   request<SetupStatus>("/api/admin/setup/password", { method: "POST", body: JSON.stringify({ password }) });
 export const finishSetup = () => request<SetupStatus>("/api/admin/setup/finish", { method: "POST" });
+
+
+// ── ช่องทางสนทนา (LINE) ─────────────────────────────────
+
+export type ChannelInfo = {
+  id: string;
+  kind: "line";
+  bot_id: string;
+  enabled: boolean;
+  welcome: boolean;
+  account_name: string;
+  secret: { set: boolean; hint: string };
+  token: { set: boolean; hint: string };
+  webhook_url: string | null;
+  last_event_at: string | null;
+  last_error: string | null;
+  messages_total: number;
+};
+export type ChannelsResponse = {
+  channels: ChannelInfo[];
+  tunnel: { status: string; error?: string | null };
+  central_url: string;
+  central_https: boolean;
+};
+export type ChannelInput = { bot_id: string; channel_secret?: string; access_token?: string; enabled: boolean; welcome: boolean };
+
+export const listChannels = () => request<ChannelsResponse>("/api/admin/channels");
+export const createChannel = (b: ChannelInput) => request<ChannelInfo>("/api/admin/channels", { method: "POST", body: JSON.stringify(b) });
+export const updateChannel = (id: string, b: ChannelInput) => request<ChannelInfo>(`/api/admin/channels/${id}`, { method: "PUT", body: JSON.stringify(b) });
+export const deleteChannel = (id: string) => request<{ message: string }>(`/api/admin/channels/${id}`, { method: "DELETE" });
+export const testChannel = (id: string) => request<{ ok: boolean; account_name: string }>(`/api/admin/channels/${id}/test`, { method: "POST" });

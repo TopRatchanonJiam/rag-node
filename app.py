@@ -31,6 +31,7 @@ from urllib.parse import urlparse
 
 import httpx
 from tunnel_client import TunnelClient
+import line_channel
 from cryptography.fernet import Fernet, InvalidToken
 from dotenv import load_dotenv
 from fastapi import Body, FastAPI, File, Form, HTTPException, Request, UploadFile
@@ -141,7 +142,7 @@ async def no_cache_html(request: Request, call_next):
 # SQLite — เก็บแต่ละรายการเป็น JSON ต่อแถว (ตารางละประเภท)
 # ══════════════════════════════════════════════
 
-_TABLES = ("kbs", "skills", "bots", "caches", "exports", "sources",
+_TABLES = ("kbs", "skills", "bots", "caches", "exports", "sources", "channels",
            # ใช้เฉพาะโหมด LEGACY_UI (legacy_api.py) — สร้างไว้เสมอก็ไม่เสียหาย
            "ocr_jobs", "screening_jobs", "screening_candidates", "screening_templates", "pharmacy")
 _db_lock = threading.RLock()
@@ -789,7 +790,8 @@ def get_token(force: bool = False, settings: dict | None = None) -> str:
             raise CentralError(502, "central_unreachable", f"ติดต่อ central ที่ {url} ไม่ได้ ({type(e).__name__})")
         _raise_for(resp)
         body = resp.json()
-        _tokens[cache_key] = {"value": body["access_token"], "exp": time.time() + int(body.get("expires_in", 900)),
+        _tokens[cache_key] = {"value": body["access_token"], "tenant_id": body.get("tenant_id"),
+                              "exp": time.time() + int(body.get("expires_in", 900)),
                               "license": body.get("license"), "warnings": body.get("warnings") or []}
         return body["access_token"]
 
@@ -862,17 +864,68 @@ def _safe_filename(name: str) -> str:
     return name
 
 
+def chat_once(bot_id: str, message: str, history: list | None = None) -> str:
+    """ถามบอทแบบไม่ stream (ใช้กับ LINE) — เส้นทางเดียวกับหน้าแชท: central /v1/chat"""
+    bot = _get_bot(bot_id)
+    stamp = _cache_stamp(bot)
+    payload = _chat_payload(bot, message, stamp, clean_history(history))
+    url, _ = _central()
+    resp = None
+    for attempt in range(2):
+        token = get_token(force=attempt > 0)
+        resp = httpx.post(f"{url}/v1/chat", headers={"Authorization": f"Bearer {token}"}, timeout=TIMEOUT, verify=CENTRAL_VERIFY,
+                          data={"payload": json.dumps(payload, ensure_ascii=False)})
+        if attempt == 0 and _should_reauth(resp):
+            continue
+        break
+    _raise_for(resp)
+    return str(_after_done(bot_id, stamp, resp.json()).get("reply") or "")
+
+
+def _channel_secrets(row: dict | None) -> dict | None:
+    if not row:
+        return None
+    return {**row, "channel_secret": _dec(row.get("channel_secret", "")), "access_token": _dec(row.get("access_token", ""))}
+
+
+def _channel_record(channel_id: str, error: str | None) -> None:
+    with _db_lock:
+        row = db_get("channels", channel_id)
+        if row:
+            row["last_event_at"] = _now()
+            row["last_error"] = error
+            row["messages_total"] = int(row.get("messages_total") or 0) + (0 if error else 1)
+            db_put("channels", channel_id, row)
+
+
+LINE = line_channel.LineService(
+    get_channel=lambda cid: _channel_secrets(db_get("channels", cid)),
+    ask=chat_once,
+    welcome_text=lambda bot_id: ((db_get("bots", bot_id) or {}).get("welcome_message") or ""),
+    record=_channel_record,
+)
+
+
+def _on_line_frame(msg: dict) -> dict:
+    try:
+        body = base64.b64decode(msg.get("body") or "")
+    except ValueError:
+        return {"status": 400}
+    return {"status": LINE.handle_webhook(str(msg.get("channel_id") or ""), str(msg.get("signature") or ""), body)}
+
+
 TUNNEL = TunnelClient(
     central_url=lambda: _central(check=False)[0],
     token=lambda force: get_token(force=force),
     target=lambda: (load_settings()["vector"].get("url", ""), load_settings()["vector"].get("api_key") or None),
     verify=CENTRAL_VERIFY,
+    on_line=_on_line_frame,
 )
 
 
 def sync_tunnel() -> None:
     """เปิดท่อเมื่อใช้ Qdrant ในเครื่อง ปิดเมื่อเปลี่ยนไปใช้ชนิดอื่น"""
-    if load_settings()["vector"].get("type") == "local":
+    if load_settings()["vector"].get("type") == "local" or db_all("channels"):
         TUNNEL.start()
     else:
         TUNNEL.stop()
@@ -2052,7 +2105,21 @@ def _cache_stamp(bot: dict) -> dict:
     }
 
 
-def _chat_payload(bot: dict, message: str, stamp: dict) -> dict:
+def clean_history(raw) -> list[dict]:
+    """ประวัติแชทจากหน้าเว็บ — ตรวจรูปแบบ/ขนาดก่อนส่งต่อ (central ตรวจซ้ำอีกชั้น)"""
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw) if raw.strip() else []
+        except ValueError:
+            return []
+    out = []
+    for h in (raw if isinstance(raw, list) else [])[-6:]:
+        if isinstance(h, dict) and h.get("role") in ("user", "assistant") and str(h.get("text") or "").strip():
+            out.append({"role": h["role"], "text": str(h["text"])[:600]})
+    return out
+
+
+def _chat_payload(bot: dict, message: str, stamp: dict, history: list | None = None) -> dict:
     s = load_settings()
     kb_rows = [kb for k in bot["kb_ids"] if (kb := db_get("kbs", k))]
     kbs = [kb_payload(kb, s) for kb in kb_rows]
@@ -2070,6 +2137,7 @@ def _chat_payload(bot: dict, message: str, stamp: dict) -> dict:
         "bot": {"system_prompt": bot.get("system_prompt", ""), "use_rerank": bot.get("use_rerank", False),
                 "kbs": kbs, "skills": skills},
         "message": message,
+        **({"history": history} if history else {}),
     }
 
 
@@ -2105,10 +2173,10 @@ async def _read_file_part(file: UploadFile | None):
 
 
 @app.post("/api/bots/{bot_id}/chat/stream")
-async def chat_stream(bot_id: str, message: str = Form(...), file: UploadFile | None = File(None)):
+async def chat_stream(bot_id: str, message: str = Form(...), history: str = Form(""), file: UploadFile | None = File(None)):
     bot = _get_bot(bot_id)
     stamp = _cache_stamp(bot)
-    payload = _chat_payload(bot, message, stamp)
+    payload = _chat_payload(bot, message, stamp, clean_history(history))
     file_part = await _read_file_part(file)
     url, _ = _central()
 
@@ -2150,10 +2218,10 @@ async def chat_stream(bot_id: str, message: str = Form(...), file: UploadFile | 
 
 
 @app.post("/api/bots/{bot_id}/chat")
-async def chat(bot_id: str, message: str = Form(...), file: UploadFile | None = File(None)):
+async def chat(bot_id: str, message: str = Form(...), history: str = Form(""), file: UploadFile | None = File(None)):
     bot = _get_bot(bot_id)
     stamp = _cache_stamp(bot)
-    payload = _chat_payload(bot, message, stamp)
+    payload = _chat_payload(bot, message, stamp, clean_history(history))
     file_part = await _read_file_part(file)
     url, _ = _central()
     async with httpx.AsyncClient(timeout=TIMEOUT, verify=CENTRAL_VERIFY) as client:
@@ -2359,6 +2427,113 @@ def setup_finish():
     s = load_settings()
     _update_settings(setup={**(s.get("setup") or {}), "completed": True})
     return setup_status()
+
+
+# ══════════════════════════════════════════════
+# ช่องทางสนทนา: LINE Official Account (หลังบ้าน)
+# ══════════════════════════════════════════════
+
+def _public_channel(row: dict, tenant_id: str | None, central_url: str) -> dict:
+    cid = row["id"]
+    return {
+        "id": cid, "kind": "line", "bot_id": row.get("bot_id"), "enabled": row.get("enabled", True),
+        "welcome": row.get("welcome", True), "account_name": row.get("account_name") or "",
+        "secret": _mask(_dec(row.get("channel_secret", ""))), "token": _mask(_dec(row.get("access_token", ""))),
+        "webhook_url": f"{central_url}/v1/line/webhook/{tenant_id}/{cid}" if tenant_id and central_url else None,
+        "last_event_at": row.get("last_event_at"), "last_error": row.get("last_error"),
+        "messages_total": int(row.get("messages_total") or 0), "created_at": row.get("created_at"),
+    }
+
+
+def _tenant_id() -> str | None:
+    try:
+        get_token()
+        return (token_info() or {}).get("tenant_id")
+    except CentralError:
+        return None
+
+
+@app.get("/api/admin/channels")
+def list_channels():
+    url, _ = _central(check=False)
+    tid = _tenant_id()
+    return {"channels": [_public_channel(r, tid, url) for r in db_all("channels")],
+            "tunnel": TUNNEL.state, "central_url": url, "central_https": url.startswith("https://")}
+
+
+class ChannelIn(BaseModel):
+    bot_id: str
+    channel_secret: str | None = ""   # "" = ใช้ค่าเดิม (ตอนแก้ไข)
+    access_token: str | None = ""
+    enabled: bool = True
+    welcome: bool = True
+
+
+def _validate_channel_bot(bot_id: str) -> None:
+    if not db_get("bots", bot_id):
+        raise HTTPException(404, "ไม่พบ Chatbot")
+
+
+def _fetch_line_name(token: str) -> str:
+    try:
+        info = line_channel.fetch_bot_info(token)
+    except ValueError as e:
+        raise HTTPException(422, f"[credential_invalid] {e}")
+    return str(info.get("displayName") or info.get("basicId") or "")
+
+
+@app.post("/api/admin/channels")
+def create_channel(req: ChannelIn):
+    _validate_channel_bot(req.bot_id)
+    secret, token = (req.channel_secret or "").strip(), (req.access_token or "").strip()
+    if not secret or not token:
+        raise HTTPException(400, "ใส่ Channel secret และ Channel access token ให้ครบ")
+    name = _fetch_line_name(token)
+    cid = "ch_" + secrets.token_hex(8)
+    db_put("channels", cid, {"id": cid, "kind": "line", "bot_id": req.bot_id, "channel_secret": _enc(secret),
+                             "access_token": _enc(token), "enabled": req.enabled, "welcome": req.welcome,
+                             "account_name": name, "created_at": _now(), "last_event_at": None, "last_error": None,
+                             "messages_total": 0})
+    sync_tunnel()
+    url, _ = _central(check=False)
+    return _public_channel(db_get("channels", cid), _tenant_id(), url)
+
+
+@app.put("/api/admin/channels/{channel_id}")
+def update_channel(channel_id: str, req: ChannelIn):
+    _validate_channel_bot(req.bot_id)
+    with _db_lock:
+        row = db_get("channels", channel_id)
+        if not row:
+            raise HTTPException(404, "ไม่พบช่องทางนี้")
+        if (req.access_token or "").strip():
+            row["access_token"] = _enc(req.access_token.strip())
+            row["account_name"] = _fetch_line_name(req.access_token.strip())
+        if (req.channel_secret or "").strip():
+            row["channel_secret"] = _enc(req.channel_secret.strip())
+        row.update({"bot_id": req.bot_id, "enabled": req.enabled, "welcome": req.welcome})
+        db_put("channels", channel_id, row)
+    url, _ = _central(check=False)
+    return _public_channel(row, _tenant_id(), url)
+
+
+@app.delete("/api/admin/channels/{channel_id}")
+def delete_channel(channel_id: str):
+    if not db_get("channels", channel_id):
+        raise HTTPException(404, "ไม่พบช่องทางนี้")
+    db_delete("channels", channel_id)
+    sync_tunnel()
+    return {"message": "ลบช่องทางแล้ว"}
+
+
+@app.post("/api/admin/channels/{channel_id}/test")
+def test_channel(channel_id: str):
+    """ตรวจ access token กับ LINE + สถานะท่อไป central (secret ตรวจได้เฉพาะตอนมีข้อความหรือกด Verify ใน LINE Developers)"""
+    row = _channel_secrets(db_get("channels", channel_id))
+    if not row:
+        raise HTTPException(404, "ไม่พบช่องทางนี้")
+    name = _fetch_line_name(row["access_token"])
+    return {"ok": True, "account_name": name, "tunnel": TUNNEL.state}
 
 
 # API แบบระบบเดิม (langchain-demo) ให้หน้าเว็บเดิมใช้ได้ — เปิดเฉพาะเมื่อตั้ง LEGACY_UI=1

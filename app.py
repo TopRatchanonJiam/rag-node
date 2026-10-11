@@ -120,6 +120,8 @@ def _needs_password(method: str, path: str) -> bool:
     if path.startswith("/admin"):
         return True
     if path.startswith("/api/"):
+        if LEGACY_UI and not path.startswith("/api/admin"):
+            return False  # หน้าเว็บระบบเดิมเปิดสาธารณะทั้งหมดอยู่แล้ว — คงพฤติกรรมเดิม (หลังบ้าน node ยังล็อก)
         return not any(m == method and rx.match(path) for m, rx in _PUBLIC_API)
     return False
 

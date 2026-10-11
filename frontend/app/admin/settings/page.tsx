@@ -696,7 +696,7 @@ function InfraModal({
         {(!isVector || usesUrl) && (
           <Field
             label={isVector ? "URL" : "ที่อยู่ central"}
-            hint={!isVector ? "เช่น http://192.168.30.108:9000" : vtype === "local" ? "เช่น http://127.0.0.1:6333 หรือ http://qdrant:6333 (ใน docker-compose)" : "เช่น https://xxxx.cloud.qdrant.io"}
+            hint={!isVector ? "เช่น http://192.168.1.10:9000" : vtype === "local" ? "เช่น http://127.0.0.1:6333 หรือ http://qdrant:6333 (ใน docker-compose)" : "เช่น https://xxxx.cloud.qdrant.io"}
           >
             <input className="field font-mono text-[13px]" value={url} onChange={(e) => setUrl(e.target.value)} spellCheck={false} />
           </Field>

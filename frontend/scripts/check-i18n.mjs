@@ -3,7 +3,7 @@
 // คอมเมนต์ภาษาไทยได้ (ตัดคอมเมนต์ออกก่อนตรวจ)
 import { readFileSync } from "node:fs";
 
-const MIGRATED = ["app/setup/page.tsx", "lib/i18n.tsx", "app/admin/channels/page.tsx"];
+const MIGRATED = ["app/setup/page.tsx", "lib/i18n.tsx", "app/admin/channels/page.tsx", "components/admin/NoticeBar.tsx"];
 const SCRIPT = /[฀-๿぀-ヿ一-鿿]/;
 const LABELS_OK = /label: "(ไทย|English|日本語|中文)"/; // ชื่อภาษาในตัวเลือกภาษา แสดงเป็นภาษาของมันเองโดยตั้งใจ
 

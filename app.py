@@ -101,10 +101,71 @@ def _stored_password_hash() -> str:
         return ""
 
 
+# เส้นทางที่ยืนยันตัวตนเอง (API key ต่อบอท / ลายเซ็นของ LINE) — ไม่ใช้รหัสผ่านแอดมิน ไม่ว่าจะตั้ง scope แบบไหน
+_SELF_AUTH_PREFIXES = ("/api/v1/", "/api/channels/")
+# scope=admin: สิ่งที่หน้าแชทสาธารณะต้องใช้เท่านั้น — นอกนั้นใต้ /api/ ต้องเข้าสู่ระบบ
+_PUBLIC_API = (
+    ("GET", re.compile(r"^/api/bots/?$")),
+    ("GET", re.compile(r"^/api/bots/[\w-]+/?$")),
+    ("POST", re.compile(r"^/api/bots/[\w-]+/(chat|chat/stream|transcribe)/?$")),
+    ("GET", re.compile(r"^/api/exports/[\w-]+/download/?$")),
+)
+
+
+def _needs_password(method: str, path: str) -> bool:
+    if path == "/healthz" or path.startswith(_SELF_AUTH_PREFIXES):
+        return False
+    if NODE_AUTH_SCOPE != "admin":
+        return True
+    if path.startswith("/admin"):
+        return True
+    if path.startswith("/api/"):
+        return not any(m == method and rx.match(path) for m, rx in _PUBLIC_API)
+    return False
+
+
+# ชื่อโดเมนที่ใช้เปิด node ได้ (นอกจาก localhost และ IP ตรง ๆ) — เช่นเปิดผ่าน nginx ด้วยโดเมนของบริษัท
+_ALLOWED_HOSTS = {h.strip().lower() for h in os.environ.get("NODE_ALLOWED_HOSTS", "").split(",") if h.strip()}
+_IP_HOST = re.compile(r"^(\d{1,3}(\.\d{1,3}){3}|\[[0-9a-f:.]+\])$")
+
+
+def _host_only(value: str) -> str:
+    value = value.strip().lower()
+    if value.startswith("["):
+        return value.split("]")[0] + "]"
+    return value.rsplit(":", 1)[0] if value.count(":") == 1 else value
+
+
+def _host_allowed(host: str) -> bool:
+    """กัน DNS rebinding: เว็บร้ายชี้โดเมนของมันมาที่ 127.0.0.1 แล้วเรียก node ผ่านเบราว์เซอร์ของผู้ใช้
+    โดเมนแบบนั้นจะมาใน Host header — รับเฉพาะ localhost, IP ตรง ๆ และโดเมนที่ตั้งใน NODE_ALLOWED_HOSTS"""
+    h = _host_only(host)
+    return not h or h in ("localhost", "testserver") or h.endswith(".localhost") or bool(_IP_HOST.match(h)) \
+        or h in _ALLOWED_HOSTS or "*" in _ALLOWED_HOSTS
+
+
+@app.middleware("http")
+async def same_origin_guard(request: Request, call_next):
+    """กันเว็บอื่นสั่งงาน node ผ่านเบราว์เซอร์ของผู้ใช้ (node มักไม่มีรหัสผ่านตอนเปิดในเครื่องตัวเอง)"""
+    path = request.url.path
+    if path == "/healthz" or path.startswith(_SELF_AUTH_PREFIXES):
+        return await call_next(request)
+    host = request.headers.get("host", "")
+    if not _host_allowed(host):
+        return Response("host not allowed — add it to NODE_ALLOWED_HOSTS", status_code=403)
+    origin = request.headers.get("origin")
+    if request.method not in ("GET", "HEAD", "OPTIONS") and origin and origin != "null":
+        if origin.split("://", 1)[-1].rstrip("/").lower() != host.strip().lower():  # ต้องตรงทั้งโดเมนและพอร์ต
+            return Response("cross-origin request blocked", status_code=403)
+    elif request.method not in ("GET", "HEAD", "OPTIONS") and origin == "null":
+        return Response("cross-origin request blocked", status_code=403)
+    return await call_next(request)
+
+
 @app.middleware("http")
 async def basic_auth(request: Request, call_next):
     path = request.url.path
-    protected = path.startswith(("/admin", "/api/admin")) if NODE_AUTH_SCOPE == "admin" else path != "/healthz"
+    protected = _needs_password(request.method, path)
     stored_hash = "" if NODE_PASSWORD else _stored_password_hash()
     if (NODE_PASSWORD or stored_hash) and protected:
         ok = False
@@ -431,7 +492,7 @@ def _defaults_from_env() -> dict:
                    "base_url": _env("RERANK_BASE_URL", "https://api.siliconflow.com/v1")},
         "vector": {"type": _env("VECTOR_TYPE") or _guess_vector_type(_env("QDRANT_URL")), "url": _env("QDRANT_URL"),
                    "api_key": _env("QDRANT_API_KEY")},
-        "central": {"url": _env("CENTRAL_URL", "http://127.0.0.1:9000"), "license_key": _env("LICENSE_KEY")},
+        "central": {"url": _env("CENTRAL_URL", "https://central.1n9ai.com"), "license_key": _env("LICENSE_KEY")},
     })
 
 
@@ -2308,9 +2369,44 @@ def setup_status(s: dict | None = None) -> dict:
             "central_url": s["central"].get("url", ""), "admin_user": NODE_USER}
 
 
+_program_cache: dict = {"at": 0.0, "value": None}
+
+
+def central_program(s: dict | None = None) -> dict | None:
+    """central แจกอะไรอยู่ตอนนี้ (Free Beta หรือทดลอง N ชม.) — จำไว้ 60 วินาที · ติดต่อไม่ได้ = None"""
+    if time.time() - _program_cache["at"] < 60:
+        return _program_cache["value"]
+    url = (s or load_settings())["central"].get("url", "")
+    value = None
+    if url:
+        try:
+            resp = httpx.get(f"{url}/v1/program", timeout=5, verify=CENTRAL_VERIFY)
+            value = resp.json() if resp.status_code == 200 else None
+        except (httpx.HTTPError, ValueError):
+            value = None
+    _program_cache.update(at=time.time(), value=value)
+    return value
+
+
 @app.get("/api/admin/setup")
 def get_setup():
-    return setup_status()
+    return {**setup_status(), "program": central_program()}
+
+
+@app.get("/api/admin/notice")
+def admin_notice():
+    """แถบแจ้งเตือนบนหลังบ้าน: Free Beta ใกล้จบ / จบแล้ว — คืนแค่รหัสกับวันที่ ข้อความอยู่ในไฟล์ภาษาของหน้าเว็บ"""
+    s = load_settings()
+    if not s["central"].get("license_key"):
+        return {"notice": None}
+    try:
+        info = live_license(s)
+    except CentralError as e:
+        return {"notice": {"code": "beta_ended"} if e.code == "beta_ended" else None}
+    for w in info.get("warnings") or []:
+        if w.get("code") == "beta_ending":
+            return {"notice": {"code": "beta_ending", "ends_at": w.get("ends_at")}}
+    return {"notice": None}
 
 
 def _save_license(key: str) -> None:
@@ -2333,7 +2429,7 @@ def setup_demo(body: dict = Body(...)):
     _raise_for(resp)
     _save_license(resp.json()["license_key"])
     get_token(force=True)
-    return {**setup_status(), "demo_hours": resp.json().get("demo_hours")}
+    return {**setup_status(), "license_type": resp.json().get("license_type"), "demo_hours": resp.json().get("demo_hours")}
 
 
 @app.post("/api/admin/setup/license")

@@ -1,5 +1,5 @@
 [Unit]
-Description=RAG Node (VPS2) — customer node
+Description=RAG Node — customer node
 After=network-online.target
 Wants=network-online.target
 

@@ -5,6 +5,8 @@ import { usePathname } from "next/navigation";
 import { useEffect, type ReactNode } from "react";
 import { Bot, Database, LayoutDashboard, MessageSquareText, PlugZap, Share2, Sigma } from "lucide-react";
 import { getSetup } from "@/lib/api";
+import { AppMark } from "@/components/ui/AppMark";
+import { NoticeBar } from "@/components/admin/NoticeBar";
 
 // เมนูหลังบ้านแบ่ง 2 กลุ่มตามหน้าที่: งานของ "คนดูแลความรู้" (เนื้อหา/บอท) กับงานของ "คนดูแลระบบ"
 // (การเชื่อมต่อ AI/key) — ให้มอบหมายงานแยกคนได้ และไม่หลงไปแก้ key ระหว่างอัปโหลดเอกสาร
@@ -39,10 +41,7 @@ function isActive(pathname: string, href: string) {
 }
 
 function Logo() {
-  return (
-    // eslint-disable-next-line @next/next/no-img-element
-    <img src="/brand/1n9-icon.svg" alt="1n9 AI" width={32} height={32} className="h-8 w-8 shrink-0 drop-shadow-sm" />
-  );
+  return <AppMark size={32} />;
 }
 
 export function AdminShell({ children }: { children: ReactNode }) {
@@ -63,7 +62,7 @@ export function AdminShell({ children }: { children: ReactNode }) {
             <Logo />
             <div className="leading-tight">
               <p className="text-sm font-semibold text-accent-900">หลังบ้าน</p>
-              <p className="text-[10px] font-medium uppercase tracking-[0.25em] text-accent-400">1n9 AI · Console</p>
+              <p className="text-[10px] font-medium uppercase tracking-[0.25em] text-accent-400">Console</p>
             </div>
           </div>
           <nav className="flex flex-1 flex-col gap-6 overflow-y-auto px-3 py-3">
@@ -133,7 +132,10 @@ export function AdminShell({ children }: { children: ReactNode }) {
       </div>
 
       <main className="min-w-0 flex-1">
-        <div className="mx-auto w-full max-w-6xl px-4 py-8 sm:px-8 lg:py-10">{children}</div>
+        <div className="mx-auto w-full max-w-6xl px-4 py-8 sm:px-8 lg:py-10">
+          <NoticeBar />
+          {children}
+        </div>
       </main>
     </div>
   );

@@ -362,9 +362,12 @@ export type SetupStatus = {
   password_from_env: boolean;
   central_url: string;
   admin_user: string;
+  program?: { beta: boolean; signup_open: boolean; trial_hours: number } | null;
 };
 
 export const getSetup = () => request<SetupStatus>("/api/admin/setup");
+export type Notice = { code: "beta_ending" | "beta_ended"; ends_at?: string };
+export const getNotice = () => request<{ notice: Notice | null }>("/api/admin/notice");
 export const startTrial = (email: string) =>
   request<SetupStatus & { demo_hours?: number }>("/api/admin/setup/demo", { method: "POST", body: JSON.stringify({ email }) });
 export const saveLicenseKey = (license_key: string) =>

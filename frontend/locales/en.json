@@ -10,16 +10,19 @@
     "done_badge": "Done",
     "license": {
       "title": "Get started",
-      "desc": "Free 5-hour trial, no card needed. The clock starts at your first question, not during setup.",
       "tab_trial": "Free trial",
       "tab_key": "I have a license key",
       "email": "Email",
-      "email_hint": "Used to remind you before the trial ends. One trial per machine.",
+      "email_hint": "One free license per machine and email.",
       "start_trial": "Start free trial",
       "key": "License key",
       "key_hint": "You get it after subscribing. Move between machines with the same key.",
       "save_key": "Use this key",
-      "ready": "License is ready"
+      "ready": "License is ready",
+      "beta_desc": "Free during the beta, no card needed. It won't be free forever: we'll announce the end at least 10 days ahead, and your license keeps working until the end of that month.",
+      "trial_desc": "Free {hours}-hour trial, no card needed. The clock starts at your first question, not during setup.",
+      "tab_beta": "Free beta",
+      "start_beta": "Get a free beta license"
     },
     "ai": {
       "title": "Connect AI",
@@ -108,5 +111,10 @@
       "pc_note": "The program must be running and online for the bot to answer. While the machine is off, messages get no reply.",
       "unnamed": "LINE account"
     }
+  },
+  "notice": {
+    "beta_ending": "The free beta ends on {date}. Renew before then to keep using this license. Your data stays as it is.",
+    "beta_ended": "The free beta has ended, so answering is paused. Renew to continue with the same license. Your data is still here.",
+    "renew": "Renew"
   }
 }

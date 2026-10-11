@@ -5,6 +5,7 @@ import { CheckCircle2, ExternalLink, KeyRound, Loader2, Lock, Sparkles } from "l
 import { Button } from "@/components/ui/Button";
 import { finishSetup, getSetup, saveLicenseKey, setupAi, setupPassword, startTrial, type SetupStatus } from "@/lib/api";
 import { I18nProvider, LOCALES, errorText, useI18n, type Locale } from "@/lib/i18n";
+import { AppMark } from "@/components/ui/AppMark";
 
 const STEPS = ["license", "ai", "password"] as const;
 type Step = (typeof STEPS)[number] | "finish";
@@ -38,8 +39,7 @@ function Wizard() {
     <main className="mx-auto flex min-h-full max-w-xl flex-col gap-6 px-4 py-10">
       <header className="flex items-start justify-between gap-4">
         <div className="flex items-center gap-3">
-          {/* eslint-disable-next-line @next/next/no-img-element */}
-          <img src="/brand/1n9-icon.svg" alt="1n9 AI" width={40} height={40} className="h-10 w-10 drop-shadow-sm" />
+          <AppMark size={40} />
           <div>
             <h1 className="text-xl font-semibold text-accent-900">{t("setup.title")}</h1>
             <p className="text-sm text-accent-500">{t("setup.subtitle")}</p>
@@ -136,9 +136,12 @@ function LicenseStep({ status, onDone }: { status: SetupStatus; onDone: (s: Setu
   const [email, setEmail] = useState("");
   const [key, setKey] = useState("");
   const { busy, err, run } = useAction<SetupStatus>();
+  // ช่วง Free Beta เปิดรับ = แจก license beta, ปิดรับแล้ว = ทดลอง N ชั่วโมง (central บอกมา)
+  const beta = status.program ? status.program.signup_open : true;
+  const desc = beta ? t("setup.license.beta_desc") : t("setup.license.trial_desc", { hours: status.program?.trial_hours ?? 24 });
 
   return (
-    <Card icon={<Sparkles size={18} />} title={t("setup.license.title")} desc={t("setup.license.desc")}>
+    <Card icon={<Sparkles size={18} />} title={t("setup.license.title")} desc={desc}>
       {status.has_license ? (
         <Ready text={t("setup.license.ready")} />
       ) : (
@@ -151,7 +154,7 @@ function LicenseStep({ status, onDone }: { status: SetupStatus; onDone: (s: Setu
                 onClick={() => setTab(k)}
                 className={`rounded-lg py-2 font-medium transition ${tab === k ? "bg-white text-accent-900 shadow-soft" : "text-accent-500"}`}
               >
-                {t(k === "trial" ? "setup.license.tab_trial" : "setup.license.tab_key")}
+                {t(k === "key" ? "setup.license.tab_key" : beta ? "setup.license.tab_beta" : "setup.license.tab_trial")}
               </button>
             ))}
           </div>
@@ -180,7 +183,7 @@ function LicenseStep({ status, onDone }: { status: SetupStatus; onDone: (s: Setu
             onClick={() => run(() => (tab === "trial" ? startTrial(email.trim()) : saveLicenseKey(key.trim())), onDone)}
           >
             {busy && <Loader2 size={15} className="animate-spin" />}
-            {t(tab === "trial" ? "setup.license.start_trial" : "setup.license.save_key")}
+            {t(tab === "key" ? "setup.license.save_key" : beta ? "setup.license.start_beta" : "setup.license.start_trial")}
           </Button>
         )}
       </div>

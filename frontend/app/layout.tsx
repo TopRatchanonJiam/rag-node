@@ -11,7 +11,7 @@ const plex = IBM_Plex_Sans_Thai({
 });
 
 export const metadata: Metadata = {
-  title: "1n9 AI",
+  title: "AI Assistant",
   description: "ถาม-ตอบจากเอกสารขององค์กร",
 };
 

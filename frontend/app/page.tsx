@@ -9,6 +9,7 @@ import { ChatInput } from "@/components/chat/ChatInput";
 import { listBots, streamChatWithBot, transcribeAudio } from "@/lib/api";
 import { botIcon } from "@/lib/botIcons";
 import type { ChatMessage, Chatbot } from "@/lib/types";
+import { AppMark } from "@/components/ui/AppMark";
 
 function newId() {
   return `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -19,7 +20,7 @@ function BotPicker({ bots, activeId, onSelect }: { bots: Chatbot[]; activeId: st
   if (bots.length <= 1) {
     return (
       <span className="flex min-w-0 items-center gap-2 text-sm font-semibold text-accent-900">
-        <span className="truncate">{active?.name ?? "1n9 AI"}</span>
+        <span className="truncate">{active?.name ?? "AI Assistant"}</span>
       </span>
     );
   }
@@ -149,8 +150,7 @@ function ChatApp() {
     <div className="flex h-[100dvh] flex-col">
       <header className="flex h-14 shrink-0 items-center justify-between gap-3 border-b border-white/70 bg-white/70 px-4 backdrop-blur-xl sm:px-6">
         <div className="flex min-w-0 items-center gap-2.5">
-          {/* eslint-disable-next-line @next/next/no-img-element */}
-          <img src="/brand/1n9-icon.svg" alt="1n9 AI" width={32} height={32} className="h-8 w-8 shrink-0 drop-shadow-sm" />
+          <AppMark size={32} />
           <BotPicker bots={bots} activeId={activeBotId} onSelect={setActiveBotId} />
         </div>
         <Link

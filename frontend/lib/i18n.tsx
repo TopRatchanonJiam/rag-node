@@ -12,7 +12,7 @@ export const LOCALES = [
 ] as const;
 export type Locale = (typeof LOCALES)[number]["code"];
 
-const STORAGE_KEY = "1n9.lang";
+const STORAGE_KEY = "app.lang";
 
 function lookup(dict: Record<string, unknown>, key: string): string | undefined {
   let cur: unknown = dict;

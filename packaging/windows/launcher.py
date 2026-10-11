@@ -1,6 +1,6 @@
-"""launcher.py — จุดเริ่มของ 1n9 บน Windows (แพ็กเป็น .exe)
+"""launcher.py — จุดเริ่มของ 1n9 บน Windows (แพ็กเป็น .exe แบบไม่มีหน้าต่างดำ)
 
-เปิด node ในเครื่องนี้ แล้วเปิดเบราว์เซอร์ไปหน้าหลังบ้าน ข้อมูลทั้งหมดอยู่ใน %LOCALAPPDATA%\\1n9
+เปิด node ในเครื่องนี้ + ไอคอนที่มุมจอ (system tray: เปิดหน้าเว็บ / ปิดโปรแกรม) ข้อมูลทั้งหมดอยู่ใน %LOCALAPPDATA%\\1n9
 (ลบโปรแกรมแล้วข้อมูลไม่หาย) โค้ดของ node ใช้ชุดเดียวกับ Docker ทุกบรรทัด — ที่นี่แค่ตั้งค่าสภาพแวดล้อมก่อนเปิด
 """
 
@@ -31,6 +31,18 @@ def data_dir() -> Path:
     return d
 
 
+def redirect_output_to_log() -> None:
+    """แบบไม่มีหน้าต่างดำ stdout/stderr เป็น None — uvicorn จะพัง ส่งลงไฟล์ log แทน (หมุนเมื่อเกิน 2 MB)"""
+    if sys.stdout is not None and sys.stderr is not None and sys.stdout.isatty():
+        return
+    log_dir = data_dir().parent if data_dir().name == "data" else data_dir()
+    log = log_dir / "1n9.log"
+    if log.exists() and log.stat().st_size > 2_000_000:
+        log.replace(log_dir / "1n9.old.log")
+    stream = open(log, "a", encoding="utf-8", buffering=1)
+    sys.stdout = sys.stderr = stream
+
+
 def healthy(port: int) -> bool:
     try:
         with urllib.request.urlopen(f"http://127.0.0.1:{port}/healthz", timeout=1.5) as r:
@@ -41,7 +53,6 @@ def healthy(port: int) -> bool:
 
 def port_free(port: int) -> bool:
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        s.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1) if hasattr(socket, "SO_EXCLUSIVEADDRUSE") else None
         try:
             s.bind(("127.0.0.1", port))
             return True
@@ -84,13 +95,40 @@ def start_qdrant():
     return runner
 
 
+def run_tray(port: int, server) -> bool:
+    """ไอคอนที่มุมจอ — คืน False ถ้าสร้างไม่ได้ (เช่นรันจากซอร์สบนเครื่องที่ไม่มี pystray) ให้ผู้เรียกรันแบบไม่มีไอคอนแทน"""
+    try:
+        import pystray
+        from PIL import Image
+    except Exception:  # noqa: BLE001
+        return False
+    icon_path = bundle_dir() / "1n9.ico"
+    image = Image.open(icon_path) if icon_path.exists() else Image.new("RGBA", (64, 64), (216, 74, 103, 255))
+
+    def open_page(_icon=None, _item=None):
+        webbrowser.open(f"http://127.0.0.1:{port}/admin/")
+
+    def quit_app(icon, _item):
+        server.should_exit = True
+        icon.stop()
+
+    menu = pystray.Menu(
+        pystray.MenuItem("เปิดหน้าเว็บ 1n9", open_page, default=True),
+        pystray.MenuItem("ปิดโปรแกรม", quit_app),
+    )
+    pystray.Icon("1n9", image, "1n9 AI", menu).run()
+    return True
+
+
 def main() -> None:
     port = int(os.environ.get("NODE_PORT") or DEFAULT_PORT)
     if healthy(port):  # เปิดซ้ำ: มีตัวที่รันอยู่แล้ว แค่เปิดหน้าให้
-        webbrowser.open(f"http://127.0.0.1:{port}/admin/")
+        if "--no-browser" not in sys.argv:
+            webbrowser.open(f"http://127.0.0.1:{port}/admin/")
         return
     port = pick_port()
 
+    redirect_output_to_log()
     os.environ.setdefault("NODE_DATA_DIR", str(data_dir()))
     os.environ.setdefault("NODE_FRONTEND_DIR", str(bundle_dir() / "web"))
     os.environ.setdefault("NODE_AUTH_SCOPE", "all")
@@ -107,10 +145,23 @@ def main() -> None:
 
     import app as node  # noqa: PLC0415 — ต้อง import หลังตั้ง env เพราะ app.py อ่านค่าตอน import
 
-    if not getattr(sys, "frozen", False) or "--no-browser" not in sys.argv:
+    config = uvicorn.Config(node.app, host=os.environ.get("NODE_HOST", "127.0.0.1"), port=port, log_level="info",
+                            server_header=False, use_colors=False)
+    server = uvicorn.Server(config)
+
+    if "--no-browser" not in sys.argv:
         threading.Thread(target=open_when_ready, args=(port,), daemon=True).start()
-    uvicorn.run(node.app, host=os.environ.get("NODE_HOST", "127.0.0.1"), port=port, log_level="info",
-                server_header=False)
+
+    if "--no-tray" in sys.argv:
+        server.run()
+        return
+    thread = threading.Thread(target=server.run, name="node-server")
+    thread.start()
+    if not run_tray(port, server):
+        thread.join()
+        return
+    server.should_exit = True  # ปิดจากเมนูไอคอน
+    thread.join(timeout=15)
 
 
 if __name__ == "__main__":

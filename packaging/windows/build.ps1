@@ -3,7 +3,8 @@
 # ต้องมี: Python 3.13, Node.js 20 (build หน้าเว็บ) — build หน้าเว็บให้อัตโนมัติถ้ายังไม่มี frontend\out
 param(
     [string]$Python = "python",
-    [string]$Out = "$PSScriptRoot\dist"
+    [string]$Out = "$PSScriptRoot\dist",
+    [string]$Version = "0.0.0"
 )
 $ErrorActionPreference = "Stop"
 $node = Resolve-Path "$PSScriptRoot\..\.."
@@ -28,13 +29,14 @@ if ((Get-FileHash $zip -Algorithm SHA256).Hash.ToLower() -ne $qdrantSha256) {
 Expand-Archive $zip -DestinationPath "$cache\qdrant-$qdrantVersion" -Force
 
 & $Python -m venv $venv
-& "$venv\Scripts\python.exe" -m pip install -q -r "$node\requirements.txt" pyinstaller
+& "$venv\Scripts\python.exe" -m pip install -q -r "$node\requirements.txt" -r "$PSScriptRoot\requirements.txt" pyinstaller
 
-& "$venv\Scripts\pyinstaller.exe" --noconfirm --clean --onedir --name 1n9 `
+& "$venv\Scripts\pyinstaller.exe" --noconfirm --clean --onedir --noconsole --icon "$PSScriptRoot\1n9.ico" --name 1n9 `
     --distpath $Out --workpath "$Out\work" --specpath "$Out\work" `
     --paths $node `
     --add-data "$node\frontend\out;web" `
     --add-binary "$cache\qdrant-$qdrantVersion\qdrant.exe;qdrant" `
+    --add-data "$PSScriptRoot\1n9.ico;." `
     --hidden-import qdrant_runner `
     --collect-submodules uvicorn --collect-submodules websockets `
     --hidden-import app --hidden-import legacy_api --hidden-import tunnel_client `
@@ -42,3 +44,13 @@ Expand-Archive $zip -DestinationPath "$cache\qdrant-$qdrantVersion" -Force
     "$PSScriptRoot\launcher.py"
 
 Write-Host "`nเสร็จ: $Out\1n9\1n9.exe"
+
+# ตัวติดตั้ง (ข้ามได้ถ้าไม่มี Inno Setup: winget install JRSoftware.InnoSetup)
+$iscc = @("$env:LOCALAPPDATA\Programs\Inno Setup 6\ISCC.exe", "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe") |
+    Where-Object { Test-Path $_ } | Select-Object -First 1
+if ($iscc) {
+    & $iscc /Qp "/DAppVersion=$Version" "/DSourceDir=$Out\1n9" "/O$Out" "$PSScriptRoot\installer.iss"
+    Write-Host "ตัวติดตั้ง: $Out\1n9-Setup.exe"
+} else {
+    Write-Host "ไม่พบ Inno Setup — ข้ามการสร้างตัวติดตั้ง"
+}

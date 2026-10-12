@@ -14,3 +14,6 @@ frontend/node_modules/
 frontend/.next/
 frontend/out/
 frontend/tsconfig.tsbuildinfo
+
+# ผลลัพธ์ build ของ Windows
+packaging/windows/dist/

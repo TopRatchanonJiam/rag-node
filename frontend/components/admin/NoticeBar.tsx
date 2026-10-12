@@ -8,8 +8,8 @@ import { useI18n } from "@/lib/i18n";
 
 // ปุ่มพาไปหน้าที่แก้ปัญหาได้ ของแต่ละรหัสเตือน
 const ALERT_LINK: Record<AdminAlert["code"], { href: string; label: string }> = {
-  source_held: { href: "/admin/knowledge/", label: "notice.alerts.open_kb" },
-  source_error: { href: "/admin/knowledge/", label: "notice.alerts.open_kb" },
+  source_held: { href: "/kb/", label: "notice.alerts.open_kb" },
+  source_error: { href: "/kb/", label: "notice.alerts.open_kb" },
   ai_quota: { href: "/admin/settings/", label: "notice.alerts.open_settings" },
   ai_key: { href: "/admin/settings/", label: "notice.alerts.open_settings" },
   line_error: { href: "/admin/channels/", label: "notice.alerts.open_channels" },

@@ -123,7 +123,7 @@ export default function AdminOverviewPage() {
       <ErrorNote message={error} />
 
       <div className="mb-5 grid gap-3 sm:grid-cols-3">
-        <Stat label="คลังความรู้ (KB)" value={status.counts.kbs} href="/admin/knowledge/" icon={<Database size={18} />} />
+        <Stat label="คลังความรู้ (KB)" value={status.counts.kbs} href="/kb/" icon={<Database size={18} />} />
         <Stat label="Chatbots" value={status.counts.bots} href="/admin/bots/" icon={<Bot size={18} />} />
         <Stat label="ชุดสูตร" value={status.counts.skills} href="/admin/skills/" icon={<Sigma size={18} />} />
       </div>

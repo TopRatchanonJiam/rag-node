@@ -20,7 +20,7 @@ const GROUPS = [
     label: "จัดการความรู้",
     eyebrow: "Knowledge",
     items: [
-      { href: "/admin/knowledge", label: "คลังความรู้ (KB)", icon: Database },
+      { href: "/kb", label: "คลังความรู้ (KB)", icon: Database },
       { href: "/admin/skills", label: "ชุดสูตร", icon: Sigma },
       { href: "/admin/bots", label: "Chatbots", icon: Bot },
     ],

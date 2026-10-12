@@ -37,7 +37,7 @@ import line_channel
 from cryptography.fernet import Fernet, InvalidToken
 from dotenv import load_dotenv
 from fastapi import Body, FastAPI, File, Form, HTTPException, Request, UploadFile
-from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.concurrency import run_in_threadpool
 from pydantic import BaseModel, Field
@@ -120,7 +120,7 @@ def _needs_password(method: str, path: str) -> bool:
         return False
     if NODE_AUTH_SCOPE != "admin":
         return True
-    if path.startswith("/admin"):
+    if re.match(r"^/(admin|kb)(/|$)", path):  # หน้าหลังบ้าน (หน้าจัดการ KB อยู่ที่ /kb)
         return True
     if path.startswith("/api/"):
         if LEGACY_UI and not path.startswith("/api/admin"):
@@ -3019,6 +3019,14 @@ if LEGACY_UI:
 # ══════════════════════════════════════════════
 # หน้าเว็บ (Next.js static export) — mount ท้ายสุดเพื่อไม่ทับ /api
 # ══════════════════════════════════════════════
+
+
+@app.get("/admin/knowledge", include_in_schema=False)
+@app.get("/admin/knowledge/", include_in_schema=False)
+def _kb_page_moved():
+    """ลิงก์เก่า/บุ๊กมาร์กของหน้าจัดการ KB (ย้ายมาอยู่ที่ /kb)"""
+    return RedirectResponse("/kb/", status_code=301)
+
 
 if FRONTEND_DIR.exists():
     app.mount("/", StaticFiles(directory=FRONTEND_DIR, html=True), name="frontend")

@@ -314,7 +314,7 @@ function FinishStep() {
         <Button variant="secondary" onClick={() => (window.location.href = "/admin/")}>
           {t("setup.finish.go_admin")}
         </Button>
-        <Button onClick={() => (window.location.href = "/admin/knowledge/")}>{t("setup.finish.go_kb")}</Button>
+        <Button onClick={() => (window.location.href = "/kb/")}>{t("setup.finish.go_kb")}</Button>
       </div>
     </Card>
   );

@@ -126,5 +126,38 @@
       "open_settings": "Go to settings",
       "open_channels": "View channels"
     }
+  },
+  "apikeys": {
+    "title": "API & n8n",
+    "desc": "Let n8n, Make or your own scripts ask the bot and push live data into this node. Create a key, then paste it into an HTTP Request step.",
+    "relay": "Public URL (works from anywhere, e.g. n8n Cloud)",
+    "relay_off": "Needs this node to be connected to central over https",
+    "direct": "Direct URL (same computer or network)",
+    "copy": "Copy",
+    "copied": "Copied",
+    "name": "Name",
+    "name_ph": "e.g. n8n price bot",
+    "scope": "Type",
+    "scope_chat": "Ask the bot (chat)",
+    "scope_data": "Push live data (data)",
+    "scope_chat_short": "chat",
+    "scope_data_short": "data",
+    "bot": "Bot this key can ask",
+    "hint_chat": "A chat key can only ask the bot you pick. It cannot read your files or change anything.",
+    "hint_data": "A data key can only send tables to live data sources set to \"receive pushed data\" (Knowledge → Live data).",
+    "create": "Create key",
+    "created_title": "Copy the key for “{name}” now",
+    "created_note": "This is the only time the full key is shown. Store it in your n8n credentials. If you lose it, delete it and create a new one.",
+    "done": "I've saved it",
+    "empty": "No keys yet.",
+    "last_used": "Last used",
+    "never": "never",
+    "calls": "calls",
+    "enabled": "On",
+    "delete": "Delete",
+    "confirm_delete": "Delete this key? Anything using it stops working immediately.",
+    "example": "How to call it",
+    "ex_chat": "Ask the bot",
+    "ex_push": "Push a table (send the whole table each time)"
   }
 }

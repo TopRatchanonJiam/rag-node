@@ -97,6 +97,33 @@ function parseJson(label: string, text: string): Record<string, unknown> {
   return v as Record<string, unknown>;
 }
 
+function PushNote() {
+  return (
+    <p className="rounded-lg bg-accent-50 px-3 py-2.5 text-xs leading-relaxed text-accent-600">
+      ระบบภายนอก (เช่น n8n, Make หรือสคริปต์ของคุณ) เป็นฝ่ายส่งตารางเข้ามาที่ node เอง จึงไม่ต้องใส่ URL หรือรหัสผ่านของระบบต้นทางที่นี่ ·
+      สร้าง API key ชนิด “data” ที่หน้า ช่องทาง แล้วส่งตารางทั้งชุดไปที่ <code className="font-mono">PUT /api/v1/sources/&lt;id&gt;/rows</code>{" "}
+      (id จะแสดงในรายการหลังบันทึก) ส่งทั้งตารางทุกครั้งได้เลย ราคาหรือสต็อกที่เปลี่ยนจะถูกแก้เฉพาะแถวโดยไม่เสียค่า AI
+    </p>
+  );
+}
+
+function ModeChoice({ mode, onChange }: { mode: "pull" | "push"; onChange: (m: "pull" | "push") => void }) {
+  return (
+    <div className="flex flex-wrap gap-2">
+      {([["pull", "ดึงจาก API / Google Sheet / CSV"], ["push", "รับข้อมูลที่ส่งมา (n8n ฯลฯ)"]] as const).map(([m, label]) => (
+        <button
+          key={m}
+          type="button"
+          onClick={() => onChange(m)}
+          className={`rounded-lg px-3 py-1.5 text-xs font-semibold ring-1 ring-inset ${mode === m ? "bg-ink bg-ink-grad text-white ring-transparent" : "bg-white text-accent-600 ring-accent-200 hover:ring-brand-300"}`}
+        >
+          {label}
+        </button>
+      ))}
+    </div>
+  );
+}
+
 function SourceModal({
   kbId,
   source,
@@ -109,6 +136,8 @@ function SourceModal({
   onSaved: () => Promise<void>;
 }) {
   const [name, setName] = useState(source?.name ?? "");
+  const [mode, setMode] = useState<"pull" | "push">(source?.mode ?? "pull");
+  const isPush = mode === "push";
   const [url, setUrl] = useState(source?.url ?? "");
   const [method, setMethod] = useState<"GET" | "POST">(source?.method ?? "GET");
   const [auth, setAuth] = useState<RealtimeAuth>(source?.auth_type ?? "none");
@@ -131,7 +160,8 @@ function SourceModal({
     return {
       id: source?.id,
       name: name.trim() || "แหล่งข้อมูล",
-      url: url.trim(),
+      mode,
+      url: isPush ? "" : url.trim(),
       method,
       auth_type: auth,
       auth_token: token === null ? null : token.trim(),
@@ -170,12 +200,14 @@ function SourceModal({
   const cols = preview ? preview.fields.slice(0, 6) : [];
 
   return (
-    <Modal title={source ? `แก้ไข ${source.name}` : "เชื่อมข้อมูลสดจาก API"} onClose={onClose} size="lg">
+    <Modal title={source ? `แก้ไข ${source.name}` : "เชื่อมข้อมูลสด"} onClose={onClose} size="lg">
       <div className="flex flex-col gap-4">
+        {!source && <ModeChoice mode={mode} onChange={(m) => { setMode(m); setPreview(null); }} />}
         <div className="grid gap-4 sm:grid-cols-2">
           <Field label="ชื่อ" hint="เช่น ‘สต็อกสินค้า’ หรือ ‘ราคาวันนี้’">
             <input className="field" value={name} onChange={(e) => setName(e.target.value)} placeholder="ชื่อแหล่งข้อมูล" autoFocus />
           </Field>
+          {!isPush && (
           <Field label="อัปเดตอัตโนมัติ">
             <select className="field" value={pollSec} onChange={(e) => setPollSec(Number(e.target.value))}>
               {INTERVALS.map(([s, l]) => (
@@ -183,8 +215,11 @@ function SourceModal({
               ))}
             </select>
           </Field>
+          )}
         </div>
 
+        {isPush && <PushNote />}
+        {!isPush && (<>
         <Field label="URL ของ API" hint="node เป็นคนเรียก API นี้เอง — ใช้ API ภายในบริษัทได้ key ไม่ออกนอกองค์กร · วางลิงก์ Google Sheet (แชร์แบบทุกคนที่มีลิงก์ดูได้) หรือลิงก์ไฟล์ CSV ได้เลย">
           <div className="flex gap-2">
             <div className="flex shrink-0 overflow-hidden rounded-lg ring-1 ring-inset ring-accent-200">
@@ -273,6 +308,8 @@ function SourceModal({
           )}
         </div>
 
+        </>)}
+
         {err && (
           <p className="flex items-start gap-1.5 rounded-lg bg-rose-50 px-3 py-2 text-xs text-rose-700">
             <XCircle size={14} className="mt-px shrink-0" /> {err}
@@ -344,10 +381,12 @@ function SourceModal({
         )}
 
         <div className="flex justify-end gap-2">
-          <Button variant="secondary" onClick={() => run("test")} disabled={!!busy || !url.trim()}>
-            {busy === "test" ? <Loader2 size={15} className="animate-spin" /> : <RefreshCw size={15} />} ทดสอบดึงข้อมูล
-          </Button>
-          <Button onClick={() => run("save")} disabled={!!busy || !url.trim() || !name.trim()}>
+          {!isPush && (
+            <Button variant="secondary" onClick={() => run("test")} disabled={!!busy || !url.trim()}>
+              {busy === "test" ? <Loader2 size={15} className="animate-spin" /> : <RefreshCw size={15} />} ทดสอบดึงข้อมูล
+            </Button>
+          )}
+          <Button onClick={() => run("save")} disabled={!!busy || (!isPush && !url.trim()) || !name.trim()}>
             {busy === "save" ? <Loader2 size={15} className="animate-spin" /> : <Save size={15} />} บันทึก
           </Button>
         </div>
@@ -459,12 +498,16 @@ export function RealtimeSources({ kbId, disabled, onChanged }: { kbId: string; d
                         {s.enabled && <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-azure-grad" />}
                       </p>
                       <p className="truncate font-mono text-[11px] text-accent-400">
-                        <span className="font-semibold text-accent-500">{s.method}</span> {s.url}
+                        {s.mode === "push" ? (
+                          <><span className="font-semibold text-accent-500">PUSH</span> id: {s.id}</>
+                        ) : (
+                          <><span className="font-semibold text-accent-500">{s.method}</span> {s.url}</>
+                        )}
                       </p>
                     </div>
                   </div>
                   <label className="flex shrink-0 items-center gap-2 text-xs text-accent-600">
-                    {s.enabled ? intervalLabel(s.poll_interval_sec) : "อัปเดตอัตโนมัติ"}
+                    {s.mode === "push" ? "รับข้อมูลจากภายนอก" : s.enabled ? intervalLabel(s.poll_interval_sec) : "อัปเดตอัตโนมัติ"}
                     <Switch on={s.enabled} disabled={busy === s.id || disabled} onChange={(v) => act(s.id, () => toggleRealtimeSource(s.id, v))} />
                   </label>
                 </div>
@@ -504,9 +547,9 @@ export function RealtimeSources({ kbId, disabled, onChanged }: { kbId: string; d
                 {note?.id === s.id && <p className={`mt-1.5 text-xs ${note.ok ? "text-brand-700" : "text-rose-700"}`}>{note.text}</p>}
 
                 <div className="mt-3 flex flex-wrap items-center gap-1.5 border-t border-accent-100 pt-3">
-                  <button type="button" disabled={busy === s.id || disabled} onClick={() => syncNow(s)} className="flex items-center gap-1 rounded-md bg-ink bg-ink-grad px-2.5 py-1 text-xs font-medium text-white shadow-ink hover:shadow-glow disabled:bg-none disabled:bg-accent-300 disabled:shadow-none">
+                  {s.mode !== "push" && <button type="button" disabled={busy === s.id || disabled} onClick={() => syncNow(s)} className="flex items-center gap-1 rounded-md bg-ink bg-ink-grad px-2.5 py-1 text-xs font-medium text-white shadow-ink hover:shadow-glow disabled:bg-none disabled:bg-accent-300 disabled:shadow-none">
                     {busy === s.id ? <Loader2 size={12} className="animate-spin" /> : <RefreshCw size={12} />} อัปเดตเดี๋ยวนี้
-                  </button>
+                  </button>}
                   {s.last_status === "success" && (
                     <button type="button" onClick={() => setViewing(s)} className="flex items-center gap-1 rounded-md border border-accent-200 bg-white px-2 py-1 text-xs font-medium text-accent-700 hover:border-brand-300 hover:text-brand-700">
                       <Eye size={12} /> ดูข้อมูลที่ดึงมา
@@ -533,7 +576,7 @@ export function RealtimeSources({ kbId, disabled, onChanged }: { kbId: string; d
             onClick={() => setEditing("new")}
             className="flex items-center justify-center gap-1.5 rounded-xl border border-dashed border-accent-300 py-3 text-sm font-medium text-accent-600 hover:border-brand-400 hover:bg-brand-50/30 hover:text-brand-700 disabled:opacity-50"
           >
-            <Plus size={15} /> เชื่อม API ใหม่
+            <Plus size={15} /> เชื่อมข้อมูลสดใหม่
           </button>
         </>
       )}

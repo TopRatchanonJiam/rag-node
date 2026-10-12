@@ -4,6 +4,7 @@ import { useCallback, useEffect, useState } from "react";
 import { CheckCircle2, Copy, Loader2, MessageCircle, Plus, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/Button";
 import { PageHeader } from "@/components/admin/AdminShell";
+import { ApiKeysSection } from "@/components/admin/ApiKeys";
 import {
   createChannel, deleteChannel, listBots, listChannels, testChannel, updateChannel,
   type ChannelInfo, type ChannelsResponse,
@@ -70,6 +71,7 @@ export default function ChannelsPage() {
           </div>
         </section>
       )}
+      {data && <ApiKeysSection bots={bots} />}
     </div>
   );
 }

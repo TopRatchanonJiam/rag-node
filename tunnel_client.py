@@ -28,8 +28,9 @@ _MAX_MESSAGE = 128 * 1024 * 1024
 class TunnelClient:
     def __init__(self, central_url: Callable[[], str], token: Callable[[bool], str],
                  target: Callable[[], tuple[str, str | None]], verify=True,
-                 on_line: Callable[[dict], dict] | None = None):
+                 on_line: Callable[[dict], dict] | None = None, on_api: Callable[[dict], dict] | None = None):
         self._on_line = on_line
+        self._on_api = on_api
         self._central_url = central_url
         self._token = token
         self._target = target
@@ -113,6 +114,9 @@ class TunnelClient:
         if msg.get("op") == "line" and self._on_line:
             # webhook ของ LINE ที่ central ส่งต่อมา — ตรวจลายเซ็นแล้วตอบรับทันที (คำตอบประมวลผลทีหลังใน thread)
             return await asyncio.to_thread(self._on_line, msg)
+        if msg.get("op") == "api" and self._on_api:
+            # คำขอ API จากระบบภายนอก (n8n ฯลฯ) ที่ central relay ส่งต่อมา — node ตรวจ API key เองแล้วตอบ status + JSON
+            return await asyncio.to_thread(self._on_api, msg)
         if msg.get("op") != "http":
             return {"error": "unsupported op"}
         method, path = str(msg.get("method", "")).upper(), str(msg.get("path", ""))

@@ -414,3 +414,16 @@ export const createChannel = (b: ChannelInput) => request<ChannelInfo>("/api/adm
 export const updateChannel = (id: string, b: ChannelInput) => request<ChannelInfo>(`/api/admin/channels/${id}`, { method: "PUT", body: JSON.stringify(b) });
 export const deleteChannel = (id: string) => request<{ message: string }>(`/api/admin/channels/${id}`, { method: "DELETE" });
 export const testChannel = (id: string) => request<{ ok: boolean; account_name: string }>(`/api/admin/channels/${id}/test`, { method: "POST" });
+
+export type ApiKeyInfo = {
+  id: string; name: string; scope: "chat" | "data"; bot_id: string; bot_name: string; hint: string;
+  enabled: boolean; created_at: string | null; last_used_at: string | null; calls_total: number;
+};
+export type ApiKeysResponse = { keys: ApiKeyInfo[]; relay_base: string | null; direct_path: string };
+export type ApiKeyCreated = ApiKeyInfo & { key: string; relay_base: string | null };
+export const listApiKeys = () => request<ApiKeysResponse>("/api/admin/api-keys");
+export const createApiKey = (b: { name: string; scope: "chat" | "data"; bot_id?: string }) =>
+  request<ApiKeyCreated>("/api/admin/api-keys", { method: "POST", body: JSON.stringify(b) });
+export const toggleApiKey = (id: string, enabled: boolean) =>
+  request<ApiKeyInfo>(`/api/admin/api-keys/${encodeURIComponent(id)}`, { method: "PATCH", body: JSON.stringify({ enabled }) });
+export const deleteApiKey = (id: string) => request<{ ok: boolean }>(`/api/admin/api-keys/${encodeURIComponent(id)}`, { method: "DELETE" });

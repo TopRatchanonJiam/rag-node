@@ -39,6 +39,7 @@ from dotenv import load_dotenv
 from fastapi import Body, FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.concurrency import run_in_threadpool
 from pydantic import BaseModel, Field
 
 ROOT = Path(__file__).resolve().parent
@@ -211,7 +212,7 @@ async def no_cache_html(request: Request, call_next):
 # SQLite — เก็บแต่ละรายการเป็น JSON ต่อแถว (ตารางละประเภท)
 # ══════════════════════════════════════════════
 
-_TABLES = ("kbs", "skills", "bots", "caches", "exports", "sources", "channels",
+_TABLES = ("kbs", "skills", "bots", "caches", "exports", "sources", "channels", "api_keys",
            # ใช้เฉพาะโหมด LEGACY_UI (legacy_api.py) — สร้างไว้เสมอก็ไม่เสียหาย
            "ocr_jobs", "screening_jobs", "screening_candidates", "screening_templates", "pharmacy")
 _db_lock = threading.RLock()
@@ -975,6 +976,240 @@ LINE = line_channel.LineService(
 )
 
 
+# ══════════════════════════════════════════════
+# API สำหรับระบบภายนอก (n8n ฯลฯ) — เรียกตรงที่ node (/api/v1/*) หรือผ่าน central relay (/v1/relay/{tenant}/*)
+# ทั้งสองทางเข้าฟังก์ชันเดียวกัน (_api_dispatch) และ node เป็นคนตรวจ API key เสมอ — central ไม่รู้จัก key และไม่เก็บอะไร
+# key เก็บเป็น sha256 (สุ่ม 256 บิต เดาไม่ได้ ไม่ต้อง salt) แสดงเต็มครั้งเดียวตอนสร้าง
+# ══════════════════════════════════════════════
+
+API_KEY_PREFIX = "n9_"
+API_SCOPES = ("chat", "data")  # chat = ถามบอทตัวที่ผูกไว้ · data = ดันแถวเข้าแหล่งข้อมูลสดแบบ push
+API_MAX_CHAT_BYTES = 64 * 1024
+API_MAX_ROWS_BYTES = 16 * 1024 * 1024
+API_MAX_MESSAGE = 4000
+_api_chat_slots = threading.BoundedSemaphore(4)  # งานแชทพร้อมกันผ่าน API ต่อ node — กันท่วมเครื่องลูกค้า/ท่อ
+
+
+def _hash_api_key(key: str) -> str:
+    return hashlib.sha256(key.encode()).hexdigest()
+
+
+def _api_key_from(headers: dict) -> str:
+    auth = headers.get("authorization", "")
+    if auth.lower().startswith("bearer "):
+        return auth[7:].strip()
+    return (headers.get("x-api-key") or "").strip()
+
+
+def _api_auth(headers: dict) -> dict | None:
+    key = _api_key_from(headers)
+    if not key.startswith(API_KEY_PREFIX) or len(key) > 200:
+        return None
+    digest, found = _hash_api_key(key), None
+    for row in db_all("api_keys"):  # ไล่ครบทุกตัวเสมอ (ไม่ break) เวลาตอบจึงไม่บอกว่าใกล้ถูก
+        if secrets.compare_digest(row.get("key_hash", ""), digest):
+            found = row
+    return found if found and found.get("enabled", True) else None
+
+
+def _api_touch(row: dict) -> None:
+    with _db_lock:
+        cur = db_get("api_keys", row["id"])
+        if cur:
+            cur["last_used_at"] = _now()
+            cur["calls_total"] = int(cur.get("calls_total") or 0) + 1
+            db_put("api_keys", row["id"], cur)
+
+
+def _api_history(raw) -> list[dict]:
+    if not isinstance(raw, list):
+        return []
+    return clean_history([{"role": h.get("role"), "text": h.get("text") or h.get("content")}
+                          for h in raw if isinstance(h, dict)])
+
+
+def _api_dispatch(method: str, path: str, query: str, headers: dict, body: bytes) -> tuple[int, dict]:
+    """คืน (HTTP status, JSON) — ข้อความ error เป็นภาษาอังกฤษและบอกวิธีแก้ เพราะผู้เรียกเป็นระบบ/คนสร้าง workflow"""
+    method, path = method.upper(), "/" + path.strip("/")
+    row = _api_auth(headers)
+    if not row:
+        return 401, {"error": "unauthorized", "message": "Missing, wrong or switched-off API key. Send it as 'Authorization: Bearer n9_…'."}
+    _api_touch(row)
+    scope = row.get("scope", "chat")
+
+    if path == "/me" and method == "GET":
+        bot = db_get("bots", row.get("bot_id") or "") if scope == "chat" else None
+        return 200, {"name": row.get("name", ""), "scope": scope,
+                     "bot": {"id": bot["id"], "name": bot["name"]} if bot else None}
+
+    if path == "/chat" and method == "POST":
+        if scope != "chat":
+            return 403, {"error": "wrong_scope", "message": "This key is for data pushes. Create a 'chat' key to ask questions."}
+        if len(body) > API_MAX_CHAT_BYTES:
+            return 413, {"error": "payload_too_large", "message": f"Keep the request under {API_MAX_CHAT_BYTES // 1024} KB."}
+        try:
+            data = json.loads(body.decode("utf-8") or "{}")
+        except ValueError:
+            return 400, {"error": "bad_json", "message": 'Send JSON like {"message": "your question"}.'}
+        message = str((data or {}).get("message") or "").strip() if isinstance(data, dict) else ""
+        if not message:
+            return 400, {"error": "empty_message", "message": '"message" is required.'}
+        if len(message) > API_MAX_MESSAGE:
+            return 400, {"error": "message_too_long", "message": f"Keep the message under {API_MAX_MESSAGE} characters."}
+        if not db_get("bots", row.get("bot_id") or ""):
+            return 409, {"error": "bot_missing", "message": "The bot this key was made for no longer exists. Create a new key."}
+        if not _api_chat_slots.acquire(blocking=False):
+            return 429, {"error": "busy", "message": "Too many questions at once on this node. Retry in a few seconds."}
+        try:
+            reply = chat_once(row["bot_id"], message, _api_history(data.get("history")))
+        except CentralError as e:
+            status = 429 if e.code in ("rate_limited", "too_many_concurrent") else 502
+            return status, {"error": e.code, "message": e.message}
+        except Exception as e:  # noqa: BLE001
+            return 502, {"error": "internal", "message": f"The node could not answer ({type(e).__name__})."}
+        finally:
+            _api_chat_slots.release()
+        return 200, {"reply": reply}
+
+    if path == "/sources" and method == "GET":
+        if scope != "data":
+            return 403, {"error": "wrong_scope", "message": "This key is for questions. Create a 'data' key to push rows."}
+        kbs = {k["id"]: k.get("name", "") for k in db_all("kbs")}
+        return 200, {"sources": [
+            {"id": s["id"], "name": s.get("name", ""), "kb": kbs.get(s.get("kb_id"), ""), "enabled": bool(s.get("enabled")),
+             "last_status": s.get("last_status"), "last_synced_at": s.get("last_synced_at"),
+             "rows": s.get("last_record_count", 0)}
+            for s in db_all("sources") if s.get("mode") == "push"]}
+
+    m = re.fullmatch(r"/sources/([\w-]{1,64})/rows", path)
+    if m and method in ("PUT", "POST"):
+        if scope != "data":
+            return 403, {"error": "wrong_scope", "message": "This key is for questions. Create a 'data' key to push rows."}
+        if len(body) > API_MAX_ROWS_BYTES:
+            return 413, {"error": "payload_too_large", "message": f"Keep the request under {API_MAX_ROWS_BYTES // (1024 * 1024)} MB."}
+        src = db_get("sources", m.group(1))
+        if not src or src.get("mode") != "push":
+            return 404, {"error": "source_not_found", "message": "No push source with that id. List them with GET /sources."}
+        if not src.get("enabled"):
+            return 409, {"error": "source_off", "message": "This source is switched off in the node admin."}
+        try:
+            data = json.loads(body.decode("utf-8") or "[]")
+        except ValueError:
+            return 400, {"error": "bad_json", "message": 'Send JSON like {"rows": [{"sku": "A1", "price": 10}]}.'}
+        rows = data.get("rows") if isinstance(data, dict) else data
+        if not isinstance(rows, list) or not all(isinstance(r, dict) for r in rows):
+            return 400, {"error": "bad_rows", "message": '"rows" must be a list of objects (one object per row).'}
+        if len(rows) > RT_MAX_RECORDS:
+            return 413, {"error": "too_many_rows", "message": f"At most {RT_MAX_RECORDS} rows per source."}
+        force = "force=true" in (query or "").lower().replace(" ", "")
+        res = sync_source(src["id"], force=force, records=rows)
+        st = res.get("status")
+        if st == "success":
+            return 200, {"status": "success", "mode": res.get("mode"), "patched_rows": res.get("patched_rows", 0),
+                         "rows": res.get("record_count", len(rows))}
+        if st == "held":
+            prev = int(src.get("last_record_count") or 0)
+            return 409, {"status": "held", "error": "held", "rows_received": len(rows), "rows_before": prev,
+                         "message": (f"Held back: you sent {len(rows)} rows but the source had {prev} (or most of its columns went missing). "
+                                     "Big drops are held so an emptied sheet cannot wipe the bot; it keeps answering from the previous data. "
+                                     "If the change is intended, repeat the same request with ?force=true.")}
+        if st == "busy":
+            return 429, {"error": "busy", "message": "The previous push is still being processed. Retry shortly."}
+        return 502, {"status": "error", "error": "sync_failed", "message": res.get("error", "Sync failed.")}
+
+    return 404, {"error": "not_found", "message": "Unknown endpoint. Available: GET /me, POST /chat, GET /sources, PUT /sources/{id}/rows."}
+
+
+def _on_api_frame(msg: dict) -> dict:
+    """เฟรม op=api ที่ central relay ส่งต่อมา — ตรวจ key ที่นี่ แล้วตอบ status + JSON กลับให้ central ส่งต่อผู้เรียก"""
+    try:
+        body = base64.b64decode(msg.get("body") or "")
+    except ValueError:
+        return {"status": 400, "body": base64.b64encode(b'{"error":"bad_body"}').decode()}
+    headers = {str(k).lower(): str(v) for k, v in (msg.get("headers") or {}).items()}
+    status, payload = _api_dispatch(str(msg.get("method") or "GET"), str(msg.get("path") or "/"),
+                                    str(msg.get("query") or ""), headers, body)
+    return {"status": status, "headers": {"content-type": "application/json"},
+            "body": base64.b64encode(json.dumps(payload, ensure_ascii=False).encode()).decode()}
+
+
+@app.api_route("/api/v1/{rest:path}", methods=["GET", "POST", "PUT"])
+async def api_v1(rest: str, request: Request):
+    """เส้นตรงเข้า node (n8n อยู่เครื่อง/เครือข่ายเดียวกัน) — ยืนยันด้วย API key ไม่ใช้รหัสแอดมิน (ดู _SELF_AUTH_PREFIXES)"""
+    limit = API_MAX_ROWS_BYTES if rest.rstrip("/").endswith("/rows") else API_MAX_CHAT_BYTES
+    declared = request.headers.get("content-length")
+    if declared and declared.isdigit() and int(declared) > limit:
+        return JSONResponse({"error": "payload_too_large"}, status_code=413)
+    body = await request.body()
+    if len(body) > limit:
+        return JSONResponse({"error": "payload_too_large"}, status_code=413)
+    status, payload = await run_in_threadpool(_api_dispatch, request.method, "/" + rest, request.url.query,
+                                              {k.lower(): v for k, v in request.headers.items()}, body)
+    return JSONResponse(payload, status_code=status)
+
+
+class ApiKeyIn(BaseModel):
+    name: str
+    scope: str = "chat"
+    bot_id: str = ""
+
+
+def _relay_base() -> str | None:
+    url, _ = _central(check=False)
+    tid = _tenant_id()
+    return f"{url}/v1/relay/{tid}" if tid and url.startswith("https://") else None
+
+
+def _api_key_out(row: dict) -> dict:
+    bot = db_get("bots", row.get("bot_id") or "") if row.get("scope") == "chat" else None
+    return {"id": row["id"], "name": row.get("name", ""), "scope": row.get("scope", "chat"), "bot_id": row.get("bot_id", ""),
+            "bot_name": bot["name"] if bot else "", "hint": row.get("hint", ""), "enabled": bool(row.get("enabled", True)),
+            "created_at": row.get("created_at"), "last_used_at": row.get("last_used_at"),
+            "calls_total": int(row.get("calls_total") or 0)}
+
+
+@app.get("/api/admin/api-keys")
+def list_api_keys():
+    return {"keys": [_api_key_out(r) for r in db_all("api_keys")], "relay_base": _relay_base(), "direct_path": "/api/v1"}
+
+
+@app.post("/api/admin/api-keys")
+def create_api_key(req: ApiKeyIn):
+    if not req.name.strip():
+        raise HTTPException(400, "กรุณาตั้งชื่อ key")
+    if req.scope not in API_SCOPES:
+        raise HTTPException(400, "ชนิด key ต้องเป็น chat หรือ data")
+    if req.scope == "chat":
+        _validate_channel_bot(req.bot_id)
+    key = API_KEY_PREFIX + secrets.token_urlsafe(32)
+    kid = _new_id()
+    row = {"id": kid, "name": req.name.strip(), "scope": req.scope, "bot_id": req.bot_id if req.scope == "chat" else "",
+           "key_hash": _hash_api_key(key), "hint": key[-4:], "enabled": True, "created_at": _now(),
+           "last_used_at": None, "calls_total": 0}
+    db_put("api_keys", kid, row)
+    sync_tunnel()
+    return {**_api_key_out(row), "key": key, "relay_base": _relay_base()}  # key เต็มแสดงครั้งเดียวตรงนี้เท่านั้น
+
+
+@app.patch("/api/admin/api-keys/{kid}")
+def toggle_api_key(kid: str, body: dict = Body(...)):
+    row = db_get("api_keys", kid)
+    if not row:
+        raise HTTPException(404, "ไม่พบ key")
+    row["enabled"] = bool(body.get("enabled"))
+    db_put("api_keys", kid, row)
+    return _api_key_out(row)
+
+
+@app.delete("/api/admin/api-keys/{kid}")
+def delete_api_key(kid: str):
+    if not db_get("api_keys", kid):
+        raise HTTPException(404, "ไม่พบ key")
+    db_delete("api_keys", kid)
+    sync_tunnel()
+    return {"ok": True}
+
+
 def _on_line_frame(msg: dict) -> dict:
     try:
         body = base64.b64decode(msg.get("body") or "")
@@ -989,12 +1224,13 @@ TUNNEL = TunnelClient(
     target=lambda: (load_settings()["vector"].get("url", ""), load_settings()["vector"].get("api_key") or None),
     verify=CENTRAL_VERIFY,
     on_line=_on_line_frame,
+    on_api=_on_api_frame,
 )
 
 
 def sync_tunnel() -> None:
     """เปิดท่อเมื่อใช้ Qdrant ในเครื่อง ปิดเมื่อเปลี่ยนไปใช้ชนิดอื่น"""
-    if load_settings()["vector"].get("type") == "local" or db_all("channels"):
+    if load_settings()["vector"].get("type") == "local" or db_all("channels") or db_all("api_keys"):
         TUNNEL.start()
     else:
         TUNNEL.stop()
@@ -1629,7 +1865,9 @@ _rt_locks_guard = threading.Lock()
 
 class SourceIn(BaseModel):
     name: str
-    url: str
+    url: str = ""  # โหมด push ไม่ต้องมี URL
+    # pull = node ดึงจาก API/ชีต/CSV ตามรอบ · push = ระบบภายนอก (เช่น n8n) ส่งแถวเข้ามาที่ /api/v1/sources/{id}/rows
+    mode: str = "pull"
     method: str = "GET"
     headers: dict = Field(default_factory=dict)
     query_params: dict = Field(default_factory=dict)
@@ -1662,6 +1900,10 @@ def _rt_lock(sid: str) -> threading.Lock:
 def _validate_source(req: SourceIn) -> None:
     if not req.name.strip():
         raise HTTPException(400, "กรุณาตั้งชื่อแหล่งข้อมูล")
+    if req.mode not in ("pull", "push"):
+        raise HTTPException(400, "โหมดแหล่งข้อมูลต้องเป็น pull หรือ push")
+    if req.mode == "push":
+        return  # ไม่มี URL/การยืนยันตัวตน/รอบดึง — ระบบภายนอกเป็นฝ่ายส่งมา
     if not re.match(r"^https?://", req.url.strip(), re.I):
         raise HTTPException(400, "URL ต้องขึ้นต้นด้วย http:// หรือ https://")
     if req.method.upper() not in RT_METHODS:
@@ -1679,7 +1921,8 @@ def _source_fields(req: SourceIn, old: dict | None = None) -> dict:
     elif req.auth_token.strip():
         token = _enc(req.auth_token.strip())
     return {
-        "name": req.name.strip(), "url": req.url.strip(), "method": req.method.upper(),
+        "name": req.name.strip(), "mode": req.mode, "url": "" if req.mode == "push" else req.url.strip(),
+        "method": req.method.upper(),
         "headers": req.headers or {}, "query_params": req.query_params or {}, "body": req.body or {},
         "auth_type": req.auth_type, "auth_token": token if req.auth_type != "none" else "",
         "auth_header_name": req.auth_header_name.strip(), "auth_query_param": req.auth_query_param.strip(),
@@ -1691,6 +1934,7 @@ def _source_fields(req: SourceIn, old: dict | None = None) -> dict:
 def _source_out(src: dict) -> dict:
     out = {k: v for k, v in src.items() if k not in ("auth_token", "last_attempt_epoch", "has_data", "last_columns")}
     out["auth_token"] = _mask(_dec(src.get("auth_token", "")))
+    out.setdefault("mode", "pull")
     return out
 
 
@@ -1802,6 +2046,12 @@ def fetch_records(src: dict) -> list[dict]:
     return rows
 
 
+def _apply_fields(src: dict, rows: list[dict]) -> list[dict]:
+    """เลือกเฉพาะคอลัมน์ที่ตั้งไว้ใน source (ว่าง = ทุกคอลัมน์) — ใช้กับแถวที่ส่งเข้ามาแบบ push"""
+    keep = src.get("fields") or []
+    return [{k: r[k] for k in keep if k in r} for r in rows] if keep else rows
+
+
 def _bump_kb_revision(kb_id: str) -> None:
     with _db_lock:
         kb = db_get("kbs", kb_id)
@@ -1843,9 +2093,10 @@ def _brake_reason(src: dict, records: list[dict]) -> str | None:
     return None
 
 
-def sync_source(sid: str, force: bool = False) -> dict:
+def sync_source(sid: str, force: bool = False, records: list[dict] | None = None) -> dict:
     """ดึง API → ส่งให้ central → บันทึกสถานะ; คืนผล (ไม่ raise) ให้ทั้งปุ่ม ‘อัปเดตเดี๋ยวนี้’ และตัวจับเวลาใช้ร่วมกัน
-    force=True = แอดมินยืนยันแล้วว่าข้อมูลที่หายไปตั้งใจลบจริง (ข้ามเบรกรอบนี้รอบเดียว)"""
+    force=True = แอดมินยืนยันแล้วว่าข้อมูลที่หายไปตั้งใจลบจริง (ข้ามเบรกรอบนี้รอบเดียว)
+    records = แถวที่ระบบภายนอกส่งมาเอง (โหมด push, เช่น n8n) แทนการดึงจาก URL — ผ่านเบรกกันพลาด/ขั้นตอนเดียวกันทุกอย่าง"""
     lock = _rt_lock(sid)
     if not lock.acquire(blocking=False):
         return {"status": "busy", "error": "กำลังอัปเดตอยู่ — รอสักครู่"}
@@ -1860,7 +2111,12 @@ def sync_source(sid: str, force: bool = False) -> dict:
                 raise ValueError("ไม่พบ Knowledge Base ของแหล่งข้อมูลนี้")
             if (kb.get("embedding") or {}).get("model_id") not in load_settings()["registry"]:
                 raise ValueError("โมเดล embedding ของ Knowledge Base นี้ถูกลบไปแล้ว")
-            records = fetch_records(src)
+            if records is None:
+                if src.get("mode") == "push":
+                    raise ValueError("แหล่งข้อมูลนี้รับข้อมูลที่ระบบภายนอกส่งเข้ามา (เช่น n8n) — ไม่ได้ดึงจาก URL")
+                records = fetch_records(src)
+            else:
+                records = _apply_fields(src, records)
             if len(records) > RT_MAX_RECORDS:
                 raise ValueError(f"API ส่งมา {len(records)} แถว เกินที่รองรับ ({RT_MAX_RECORDS} แถว)")
             held = None if force else _brake_reason(src, records)
@@ -1903,7 +2159,8 @@ def _realtime_loop() -> None:
         try:
             now = time.time()
             for src in db_all("sources"):
-                if src.get("enabled") and now - float(src.get("last_attempt_epoch") or 0) >= int(src.get("poll_interval_sec") or 300):
+                if (src.get("enabled") and src.get("mode") != "push"
+                        and now - float(src.get("last_attempt_epoch") or 0) >= int(src.get("poll_interval_sec") or 300)):
                     sync_source(src["id"])
         except Exception as e:
             print(f"[realtime] loop error: {e}")
@@ -1928,7 +2185,7 @@ def create_source(kb_id: str, req: SourceIn):
     _get_kb(kb_id)
     _validate_source(req)
     sid = _new_id()
-    src = {"id": sid, "kb_id": kb_id, **_source_fields(req), "enabled": False, "syncing": False,
+    src = {"id": sid, "kb_id": kb_id, **_source_fields(req), "enabled": req.mode == "push", "syncing": False,
            "last_synced_at": None, "last_status": "never", "last_error": None, "last_record_count": 0,
            "last_chunks": 0, "last_mode": None, "created_at": _now()}
     db_put("sources", sid, src)
@@ -1940,7 +2197,7 @@ def update_source(sid: str, req: SourceIn):
     old = _get_source(sid)
     _validate_source(req)
     changed_shape = any(old.get(k) != v for k, v in _source_fields(req, old).items()
-                        if k in ("url", "method", "records_path", "body", "query_params", "fields"))
+                        if k in ("mode", "url", "method", "records_path", "body", "query_params", "fields"))
     src = {**old, **_source_fields(req, old)}
     if changed_shape:
         src["has_data"] = False  # ต้นทางเปลี่ยน — รอบหน้าโหลดใหม่ทั้งชุด ไม่ patch ทับของเก่า

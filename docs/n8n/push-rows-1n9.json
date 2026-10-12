@@ -1,0 +1,50 @@
+{
+  "name": "Push rows to 1n9",
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "6b1f0c1e-0a3e-4a55-9f0a-0000000000c1",
+      "name": "Manual Trigger",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [0, 0]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Replace this with your real source (ERP, POS, Google Sheets…). One item = one row.\nreturn [\n  { json: { sku: 'P-0101', name: 'PVC pipe 4 inch', price: 95, stock: 30 } },\n  { json: { sku: 'P-0102', name: 'PVC pipe 6 inch', price: 135, stock: 35 } },\n];"
+      },
+      "id": "6b1f0c1e-0a3e-4a55-9f0a-0000000000c2",
+      "name": "Rows",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [220, 0]
+    },
+    {
+      "parameters": {
+        "method": "PUT",
+        "url": "YOUR_BASE_URL/sources/YOUR_SOURCE_ID/rows",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Authorization", "value": "Bearer YOUR_API_KEY" }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ rows: $input.all().map(i => i.json) }) }}",
+        "options": { "timeout": 120000 }
+      },
+      "id": "6b1f0c1e-0a3e-4a55-9f0a-0000000000c3",
+      "name": "Push to 1n9",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [440, 0]
+    }
+  ],
+  "connections": {
+    "Manual Trigger": { "main": [[{ "node": "Rows", "type": "main", "index": 0 }]] },
+    "Rows": { "main": [[{ "node": "Push to 1n9", "type": "main", "index": 0 }]] }
+  },
+  "pinData": {},
+  "settings": { "executionOrder": "v1" }
+}

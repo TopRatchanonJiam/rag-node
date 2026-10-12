@@ -59,7 +59,7 @@ export function KnowledgeBaseDetail({
       <div className="flex w-fit gap-1 rounded-xl bg-accent-100/80 p-1">
         {([
           ["files", <FileText key="f" size={14} />, "ไฟล์เอกสาร", kb.file_count],
-          ["live", <Radio key="l" size={14} />, "ข้อมูลสดจาก API", kb.source_count ?? 0],
+          ["live", <Radio key="l" size={14} />, "ข้อมูลสด", kb.source_count ?? 0],
         ] as const).map(([id, icon, label, count]) => (
           <button
             key={id}

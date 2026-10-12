@@ -1,0 +1,60 @@
+{
+  "name": "Ask 1n9",
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "6b1f0c1e-0a3e-4a55-9f0a-0000000000a1",
+      "name": "Manual Trigger",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [0, 0]
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "6b1f0c1e-0a3e-4a55-9f0a-0000000000b1",
+              "name": "question",
+              "value": "How much is 60 pieces of the 4 inch PVC pipe?",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "6b1f0c1e-0a3e-4a55-9f0a-0000000000a2",
+      "name": "Question",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [220, 0]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "YOUR_BASE_URL/chat",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Authorization", "value": "Bearer YOUR_API_KEY" }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ message: $json.question }) }}",
+        "options": { "timeout": 120000 }
+      },
+      "id": "6b1f0c1e-0a3e-4a55-9f0a-0000000000a3",
+      "name": "Ask 1n9",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [440, 0]
+    }
+  ],
+  "connections": {
+    "Manual Trigger": { "main": [[{ "node": "Question", "type": "main", "index": 0 }]] },
+    "Question": { "main": [[{ "node": "Ask 1n9", "type": "main", "index": 0 }]] }
+  },
+  "pinData": {},
+  "settings": { "executionOrder": "v1" }
+}

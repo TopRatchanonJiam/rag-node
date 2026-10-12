@@ -48,6 +48,8 @@ export interface RealtimeSource {
   id: string;
   kb_id: string;
   name: string;
+  /** pull = node ดึงจาก URL/ชีต · push = ระบบภายนอก (n8n ฯลฯ) ส่งแถวเข้ามาที่ /api/v1/sources/{id}/rows */
+  mode?: "pull" | "push";
   url: string;
   method: "GET" | "POST";
   headers: Record<string, string>;

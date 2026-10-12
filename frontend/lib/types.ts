@@ -63,7 +63,8 @@ export interface RealtimeSource {
   enabled: boolean;
   syncing?: boolean;
   last_synced_at: string | null;
-  last_status: "never" | "success" | "error";
+  last_status: "never" | "success" | "error" | "held";
+  held_record_count?: number | null;
   last_error: string | null;
   last_record_count: number;
   last_chunks?: number;
@@ -76,7 +77,7 @@ export type RealtimeSourceInput = Omit<RealtimeSource, "id" | "kb_id" | "auth_to
 };
 
 export interface RealtimeSyncResult {
-  status: "success" | "error" | "busy";
+  status: "success" | "error" | "busy" | "held";
   error?: string;
   mode?: string;
   patched_rows?: number;

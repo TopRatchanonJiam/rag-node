@@ -13,7 +13,9 @@
 from __future__ import annotations
 
 import base64
+import csv
 import hashlib
+import io
 import ipaddress
 import json
 import os
@@ -1687,7 +1689,7 @@ def _source_fields(req: SourceIn, old: dict | None = None) -> dict:
 
 
 def _source_out(src: dict) -> dict:
-    out = {k: v for k, v in src.items() if k not in ("auth_token", "last_attempt_epoch", "has_data")}
+    out = {k: v for k, v in src.items() if k not in ("auth_token", "last_attempt_epoch", "has_data", "last_columns")}
     out["auth_token"] = _mask(_dec(src.get("auth_token", "")))
     return out
 
@@ -1711,6 +1713,47 @@ def _walk_path(payload, path: str):
     return node
 
 
+_GSHEET_RE = re.compile(r"^https://docs\.google\.com/spreadsheets/d/([A-Za-z0-9_-]+)(/[^?#]*)?(\?[^#]*)?(#.*)?$")
+_CSV_NUM_RE = re.compile(r"^-?(?:0|[1-9]\d{0,2}(?:,\d{3})+|[1-9]\d*)(?:\.\d+)?$")
+
+
+def _sheet_csv_url(url: str) -> str:
+    """ลิงก์ Google Sheet แบบที่ก๊อปจากแถบที่อยู่ (…/edit#gid=123) → ลิงก์ส่งออก CSV ของแท็บนั้น
+    ลิงก์ที่เป็น CSV อยู่แล้ว (export / pub?output=csv / gviz) ปล่อยไว้ตามเดิม"""
+    m = _GSHEET_RE.match(url.strip())
+    if not m or m.group(1) == "e":  # /d/e/… = ลิงก์ ‘เผยแพร่ไปยังเว็บ’ ซึ่งเจ้าของเลือกรูปแบบมาเอง
+        return url
+    path, query, frag = m.group(2) or "", m.group(3) or "", m.group(4) or ""
+    if path.startswith(("/export", "/pub", "/gviz")):
+        return url
+    gid = re.search(r"gid=(\d+)", query + frag)
+    return f"https://docs.google.com/spreadsheets/d/{m.group(1)}/export?format=csv" + (f"&gid={gid.group(1)}" if gid else "")
+
+
+def _csv_value(v: str):
+    # ตัวเลขในชีตมาเป็นข้อความ ("1,250.50") — แปลงให้เหมือน API ที่ตอบ JSON เป็นตัวเลข
+    # รหัสที่ขึ้นต้นด้วย 0 (เช่น "00123") ไม่แปลง กันเลขศูนย์หน้ารหัสหาย
+    v = v.strip()
+    if _CSV_NUM_RE.match(v):
+        n = float(v.replace(",", ""))
+        return int(n) if n.is_integer() and "." not in v else n
+    return v
+
+
+def _parse_csv(text: str) -> list[dict]:
+    reader = csv.reader(io.StringIO(text.lstrip("﻿")))
+    header = next(reader, None)
+    if not header:
+        return []
+    cols = [(i, h.strip()) for i, h in enumerate(header) if h.strip()]
+    rows = []
+    for raw in reader:
+        row = {name: _csv_value(raw[i]) for i, name in cols if i < len(raw) and raw[i].strip()}
+        if row:
+            rows.append(row)
+    return rows
+
+
 def fetch_records(src: dict) -> list[dict]:
     headers = {str(k): str(v) for k, v in (src.get("headers") or {}).items()}
     params = {str(k): str(v) for k, v in (src.get("query_params") or {}).items()}
@@ -1722,18 +1765,30 @@ def fetch_records(src: dict) -> list[dict]:
         headers[src.get("auth_header_name") or "X-API-Key"] = token
     elif token and auth == "api_key_query":
         params[src.get("auth_query_param") or "api_key"] = token
+    url = _sheet_csv_url(src["url"])
+    is_sheet = _GSHEET_RE.match(src["url"].strip()) is not None
     try:
-        resp = httpx.request(src.get("method", "GET"), src["url"], headers=headers, params=params,
+        resp = httpx.request(src.get("method", "GET"), url, headers=headers, params=params,
                              json=(src.get("body") or None) if src.get("method") == "POST" else None,
                              timeout=RT_FETCH_TIMEOUT, follow_redirects=True)
     except httpx.HTTPError as e:
         raise ValueError(f"เรียก API ไม่ได้ ({type(e).__name__}) — ตรวจ URL และเครือข่าย")
     if resp.status_code >= 400:
+        if is_sheet:
+            raise ValueError(f"Google Sheet ตอบ {resp.status_code} — ตั้งการแชร์เป็น ‘ทุกคนที่มีลิงก์ดูได้’ แล้วลองใหม่")
         raise ValueError(f"API ตอบ {resp.status_code} — ตรวจ URL / การยืนยันตัวตน")
+    ctype = resp.headers.get("content-type", "").lower()
+    if "csv" in ctype:
+        records = _parse_csv(resp.text)
+        keep = src.get("fields") or []
+        return [{k: r[k] for k in keep if k in r} for r in records] if keep else records
+    if is_sheet:
+        # ชีตที่ยังไม่แชร์ Google จะตอบหน้า login (HTML) แทน CSV
+        raise ValueError("เปิด Google Sheet นี้ไม่ได้ — ตั้งการแชร์เป็น ‘ทุกคนที่มีลิงก์ดูได้’ แล้วลองใหม่")
     try:
         payload = resp.json()
     except ValueError:
-        raise ValueError("API ไม่ได้ตอบเป็น JSON")
+        raise ValueError("API ไม่ได้ตอบเป็น JSON หรือ CSV")
     records = _walk_path(payload, src.get("records_path", ""))
     if isinstance(records, dict):
         # API บางตัวตอบเป็น object ก้อนเดียว — ถือเป็น 1 แถว
@@ -1765,8 +1820,32 @@ def _update_source(sid: str, patch: dict) -> dict | None:
         return src
 
 
-def sync_source(sid: str) -> dict:
-    """ดึง API → ส่งให้ central → บันทึกสถานะ; คืนผล (ไม่ raise) ให้ทั้งปุ่ม ‘อัปเดตเดี๋ยวนี้’ และตัวจับเวลาใช้ร่วมกัน"""
+RT_BRAKE_RATIO = 0.5  # แถว/คอลัมน์หายเกินสัดส่วนนี้ในรอบเดียว = น่าจะพลาด (ลบชีต วางทับ ลิงก์ผิดแท็บ)
+
+
+def _brake_reason(src: dict, records: list[dict]) -> str | None:
+    """เบรกกันพลาด: central สะท้อนต้นทางเสมอ (แม้ 0 แถว) ถ้าลูกค้าเผลอล้างชีต บอทจะลืมสินค้าทั้งหมดเงียบ ๆ
+    รอบที่ข้อมูลหายฮวบจึงพักไว้ก่อน — บอทใช้ข้อมูลเดิมต่อ จนกว่าต้นทางจะกลับมาปกติหรือแอดมินกดยืนยัน"""
+    prev = int(src.get("last_record_count") or 0)
+    if not src.get("has_data") or prev <= 0:
+        return None
+    tail = " — พักการอัปเดตไว้ บอทยังใช้ข้อมูลเดิม ตรวจต้นทาง หรือกด ‘ยืนยันใช้ข้อมูลใหม่’ ถ้าตั้งใจเปลี่ยนจริง"
+    if not records:
+        return f"ต้นทางส่งมา 0 แถว (รอบก่อน {prev:,} แถว){tail}"
+    if prev >= 4 and len(records) < prev * RT_BRAKE_RATIO:
+        return f"จำนวนแถวลดจาก {prev:,} เหลือ {len(records):,}{tail}"
+    prev_cols = set(src.get("last_columns") or [])
+    if prev_cols:
+        cols = set().union(*(r.keys() for r in records))
+        missing = sorted(prev_cols - cols)
+        if len(missing) > len(prev_cols) * RT_BRAKE_RATIO:
+            return f"คอลัมน์หายไป {len(missing)} จาก {len(prev_cols)} ({', '.join(missing[:5])}){tail}"
+    return None
+
+
+def sync_source(sid: str, force: bool = False) -> dict:
+    """ดึง API → ส่งให้ central → บันทึกสถานะ; คืนผล (ไม่ raise) ให้ทั้งปุ่ม ‘อัปเดตเดี๋ยวนี้’ และตัวจับเวลาใช้ร่วมกัน
+    force=True = แอดมินยืนยันแล้วว่าข้อมูลที่หายไปตั้งใจลบจริง (ข้ามเบรกรอบนี้รอบเดียว)"""
     lock = _rt_lock(sid)
     if not lock.acquire(blocking=False):
         return {"status": "busy", "error": "กำลังอัปเดตอยู่ — รอสักครู่"}
@@ -1784,6 +1863,12 @@ def sync_source(sid: str) -> dict:
             records = fetch_records(src)
             if len(records) > RT_MAX_RECORDS:
                 raise ValueError(f"API ส่งมา {len(records)} แถว เกินที่รองรับ ({RT_MAX_RECORDS} แถว)")
+            held = None if force else _brake_reason(src, records)
+            if held:
+                updated = _update_source(sid, {"syncing": False, "last_synced_at": _now(), "last_status": "held",
+                                               "last_error": held, "held_record_count": len(records)})
+                return {"status": "held", "error": held, "record_count": len(records),
+                        "source": _source_out(updated) if updated else None}
             res = central_json("/v1/ingest/records", {
                 "ctx": _kb_ctx(kb), "kb": kb_payload(kb),
                 # เคยดึงสำเร็จและต้นทางไม่ได้เปลี่ยน → patch ได้ (รอบที่ล้มชั่วคราวไม่ทำให้ต้องโหลดใหม่ทั้งชุด)
@@ -1794,7 +1879,8 @@ def sync_source(sid: str) -> dict:
             if res.get("cache_invalidated"):
                 _bump_kb_revision(kb["id"])
             patch = {"syncing": False, "has_data": True, "last_synced_at": _now(), "last_status": "success", "last_error": None,
-                     "last_record_count": len(records), "last_mode": res.get("mode")}
+                     "last_record_count": len(records), "last_mode": res.get("mode"), "held_record_count": None,
+                     "last_columns": sorted(set().union(*(r.keys() for r in records)))[:200] if records else []}
             if res.get("chunks") is not None:
                 patch["last_chunks"] = res["chunks"]
             updated = _update_source(sid, patch)
@@ -1887,9 +1973,9 @@ def test_source(req: SourceIn):
 
 
 @app.post("/api/sources/{sid}/sync")
-def sync_now(sid: str):
+def sync_now(sid: str, force: bool = False):
     _get_source(sid)
-    return sync_source(sid)
+    return sync_source(sid, force=force)
 
 
 @app.patch("/api/sources/{sid}/toggle")
@@ -2413,6 +2499,28 @@ def admin_notice():
         if w.get("code") == "beta_ending":
             return {"notice": {"code": "beta_ending", "ends_at": w.get("ends_at")}}
     return {"notice": None}
+
+
+_AI_ERROR_KIND = {"provider_quota_exhausted": "ai_quota", "credential_invalid": "ai_key"}
+
+
+@app.get("/api/admin/alerts")
+def admin_alerts():
+    """เตือนเจ้าของร้านเชิงรุกบนทุกหน้าหลังบ้าน — เรื่องที่ทำให้บอทตอบผิด/ไม่ตอบโดยเจ้าของไม่รู้ตัว
+    คืนแค่รหัส + ชื่อ + รายละเอียด ข้อความและวิธีแก้อยู่ในไฟล์ภาษาของหน้าเว็บ"""
+    alerts = []
+    for s in db_all("sources"):
+        if s.get("last_status") == "held":
+            alerts.append({"code": "source_held", "name": s.get("name", "")})
+        elif s.get("enabled") and s.get("last_status") == "error":
+            alerts.append({"code": "source_error", "name": s.get("name", ""), "detail": s.get("last_error") or ""})
+    for ch in db_all("channels"):
+        err = ch.get("last_error")
+        if err and ch.get("enabled", True):
+            m = re.match(r"\[(\w+)\]\s*", err)
+            alerts.append({"code": _AI_ERROR_KIND.get(m.group(1) if m else "", "line_error"),
+                           "name": ch.get("account_name") or "", "detail": err[m.end():] if m else err})
+    return {"alerts": alerts}
 
 
 def _save_license(key: str) -> None:

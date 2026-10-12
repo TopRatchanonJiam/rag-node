@@ -115,6 +115,16 @@
   "notice": {
     "beta_ending": "The free beta ends on {date}. Renew before then to keep using this license. Your data stays as it is.",
     "beta_ended": "The free beta has ended, so answering is paused. Renew to continue with the same license. Your data is still here.",
-    "renew": "Renew"
+    "renew": "Renew",
+    "alerts": {
+      "source_held": "Live data ‘{name}’ is on hold because the source lost data unexpectedly (e.g. the sheet was cleared or pasted over). The bot still answers from the previous data. Check the source, or open it and confirm if the change was intended.",
+      "source_error": "Couldn't fetch live data ‘{name}’. The bot is answering from the last successful fetch. Cause: {detail}",
+      "ai_quota": "The LINE bot ‘{name}’ can't answer because your AI key is out of credit or quota. Top up or enable billing with your AI provider (free keys have a small daily quota) and the bot will resume on its own.",
+      "ai_key": "The LINE bot ‘{name}’ can't answer because the AI key is invalid or revoked. Go to Settings to enter a new key.",
+      "line_error": "The LINE bot ‘{name}’ failed to answer last time: {detail}",
+      "open_kb": "Open knowledge",
+      "open_settings": "Go to settings",
+      "open_channels": "View channels"
+    }
   }
 }

@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useState, type ReactNode } from "react";
 import {
+  AlertTriangle,
   CheckCircle2,
   ChevronDown,
   Eye,
@@ -184,7 +185,7 @@ function SourceModal({
           </Field>
         </div>
 
-        <Field label="URL ของ API" hint="node เป็นคนเรียก API นี้เอง — ใช้ API ภายในบริษัทได้ key ไม่ออกนอกองค์กร">
+        <Field label="URL ของ API" hint="node เป็นคนเรียก API นี้เอง — ใช้ API ภายในบริษัทได้ key ไม่ออกนอกองค์กร · วางลิงก์ Google Sheet (แชร์แบบทุกคนที่มีลิงก์ดูได้) หรือลิงก์ไฟล์ CSV ได้เลย">
           <div className="flex gap-2">
             <div className="flex shrink-0 overflow-hidden rounded-lg ring-1 ring-inset ring-accent-200">
               {(["GET", "POST"] as const).map((m) => (
@@ -412,9 +413,9 @@ export function RealtimeSources({ kbId, disabled, onChanged }: { kbId: string; d
     }
   }
 
-  async function syncNow(s: RealtimeSource) {
+  async function syncNow(s: RealtimeSource, force = false) {
     await act(s.id, async () => {
-      const r = await syncRealtimeSource(s.id);
+      const r = await syncRealtimeSource(s.id, force);
       setNote({
         id: s.id,
         ok: r.status === "success",
@@ -446,7 +447,7 @@ export function RealtimeSources({ kbId, disabled, onChanged }: { kbId: string; d
           {sources.map((s) => {
             const status = s.syncing ? "syncing" : s.last_status;
             return (
-              <div key={s.id} className={`rounded-xl p-4 ring-1 ${status === "error" ? "bg-rose-50/30 ring-rose-200" : "bg-white ring-accent-200"}`}>
+              <div key={s.id} className={`rounded-xl p-4 ring-1 ${status === "error" ? "bg-rose-50/30 ring-rose-200" : status === "held" ? "bg-amber-50/40 ring-amber-300" : "bg-white ring-accent-200"}`}>
                 <div className="flex flex-wrap items-start justify-between gap-3">
                   <div className="flex min-w-0 items-start gap-3">
                     <span className={`mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-xl ${s.enabled ? "bg-ink bg-ink-grad text-brand-300 shadow-ink" : "bg-accent-100 text-accent-400"}`}>
@@ -475,13 +476,31 @@ export function RealtimeSources({ kbId, disabled, onChanged }: { kbId: string; d
                     <span className="flex items-center gap-1 font-medium text-emerald-700"><CheckCircle2 size={12} /> {timeAgo(s.last_synced_at)}</span>
                   ) : status === "error" ? (
                     <span className="flex items-center gap-1 font-medium text-rose-700"><XCircle size={12} /> ล้มเหลว {timeAgo(s.last_synced_at)}</span>
+                  ) : status === "held" ? (
+                    <span className="flex items-center gap-1 font-medium text-amber-700"><AlertTriangle size={12} /> พักการอัปเดต {timeAgo(s.last_synced_at)}</span>
                   ) : (
                     <span>ยังไม่เคยอัปเดต</span>
                   )}
-                  {s.last_status !== "never" && <span>{s.last_record_count.toLocaleString()} แถว · {s.last_chunks ?? 0} chunks</span>}
+                  {s.last_status !== "never" && <span>{s.last_status === "held" ? "ที่บอทใช้อยู่: " : ""}{s.last_record_count.toLocaleString()} แถว · {s.last_chunks ?? 0} chunks</span>}
                   {s.last_mode && s.last_status === "success" && <span>รอบล่าสุด: {MODE_LABEL[s.last_mode]}</span>}
                 </div>
                 {s.last_status === "error" && s.last_error && <p className="mt-1.5 text-xs text-rose-700">{s.last_error}</p>}
+                {s.last_status === "held" && s.last_error && (
+                  <div className="mt-2 rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-800 ring-1 ring-amber-200">
+                    <p>{s.last_error}</p>
+                    <button
+                      type="button"
+                      disabled={busy === s.id || disabled}
+                      onClick={() =>
+                        window.confirm(`แทนข้อมูลเดิมด้วยข้อมูลใหม่ (${(s.held_record_count ?? 0).toLocaleString()} แถว)? บอทจะตอบจากข้อมูลใหม่ทันที`) &&
+                        syncNow(s, true)
+                      }
+                      className="mt-2 rounded-md bg-amber-600 px-2.5 py-1 font-medium text-white hover:bg-amber-700 disabled:opacity-50"
+                    >
+                      ยืนยันใช้ข้อมูลใหม่
+                    </button>
+                  </div>
+                )}
                 {note?.id === s.id && <p className={`mt-1.5 text-xs ${note.ok ? "text-brand-700" : "text-rose-700"}`}>{note.text}</p>}
 
                 <div className="mt-3 flex flex-wrap items-center gap-1.5 border-t border-accent-100 pt-3">

@@ -85,8 +85,8 @@ export async function testRealtimeSource(body: RealtimeSourceInput): Promise<{ t
   return request("/api/sources/test", { method: "POST", body: JSON.stringify(body) });
 }
 
-export async function syncRealtimeSource(id: string): Promise<RealtimeSyncResult> {
-  return request(`/api/sources/${encodeURIComponent(id)}/sync`, { method: "POST" });
+export async function syncRealtimeSource(id: string, force = false): Promise<RealtimeSyncResult> {
+  return request(`/api/sources/${encodeURIComponent(id)}/sync${force ? "?force=true" : ""}`, { method: "POST" });
 }
 
 export async function toggleRealtimeSource(id: string, enabled: boolean): Promise<RealtimeSource> {
@@ -368,6 +368,12 @@ export type SetupStatus = {
 export const getSetup = () => request<SetupStatus>("/api/admin/setup");
 export type Notice = { code: "beta_ending" | "beta_ended"; ends_at?: string };
 export const getNotice = () => request<{ notice: Notice | null }>("/api/admin/notice");
+export type AdminAlert = {
+  code: "source_held" | "source_error" | "ai_quota" | "ai_key" | "line_error";
+  name: string;
+  detail?: string;
+};
+export const getAlerts = () => request<{ alerts: AdminAlert[] }>("/api/admin/alerts");
 export const startTrial = (email: string) =>
   request<SetupStatus & { demo_hours?: number }>("/api/admin/setup/demo", { method: "POST", body: JSON.stringify({ email }) });
 export const saveLicenseKey = (license_key: string) =>

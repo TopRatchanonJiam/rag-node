@@ -151,7 +151,9 @@ class LineService:
         try:
             answer = to_plain_text(self._ask(ch["bot_id"], text, history)) or ""
         except Exception as e:  # noqa: BLE001
-            self._record(ch["id"], f"{type(e).__name__}: {e}"[:200])
+            # เก็บรหัส error ของ central ไว้ด้วย (เช่น [provider_quota_exhausted]) ให้หลังบ้านบอกสาเหตุและวิธีแก้ได้ตรงจุด
+            code = getattr(e, "code", "")
+            self._record(ch["id"], (f"[{code}] {e}" if code else f"{type(e).__name__}: {e}")[:200])
             self._reply(ch, token, [_FALLBACK_TH if THAI.search(text) else _FALLBACK_EN])
             return
         if not answer:

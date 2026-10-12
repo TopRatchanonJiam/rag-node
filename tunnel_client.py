@@ -63,13 +63,16 @@ class TunnelClient:
             try:
                 token = await asyncio.to_thread(self._token, force_token)
                 url = re.sub(r"^http", "ws", self._central_url().rstrip("/")) + "/v1/tunnel"
-                ssl_ctx = None
+                # ไม่ใส่ ssl= เลยถ้าไม่ได้ปักหมุด CA เอง — websockets รุ่นใหม่ปฏิเสธ ssl=None กับ wss:// ทันที
+                # (มองว่าขัดกับ scheme ที่ขอ TLS) ปล่อยให้มันสร้าง default SSLContext ของตัวเองสำหรับ wss://
+                connect_kwargs = {}
                 if url.startswith("wss://") and self._verify is not True:
                     import ssl
-                    ssl_ctx = ssl.create_default_context(cafile=self._verify) if isinstance(self._verify, str) else ssl.create_default_context()
+                    connect_kwargs["ssl"] = (ssl.create_default_context(cafile=self._verify)
+                                             if isinstance(self._verify, str) else ssl.create_default_context())
                 async with websockets.connect(url, additional_headers={"Authorization": f"Bearer {token}"},
                                               max_size=_MAX_MESSAGE, ping_interval=20, ping_timeout=20,
-                                              open_timeout=15, ssl=ssl_ctx) as ws:
+                                              open_timeout=15, **connect_kwargs) as ws:
                     self._set("connected")
                     delay, force_token = 1.0, False
                     await self._serve(ws)
